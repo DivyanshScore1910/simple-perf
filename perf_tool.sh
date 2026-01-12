@@ -69,13 +69,16 @@ MEMORY_EVENTS=(
     "offcore_requests.demand_data_rd"
 )
 
-# FLOPs events
+# FLOPs events (SP and DP)
 FLOPS_EVENTS=(
     "fp_arith_inst_retired.scalar_single"
     "fp_arith_inst_retired.scalar_double"
     "fp_arith_inst_retired.128b_packed_single"
     "fp_arith_inst_retired.256b_packed_single"
     "fp_arith_inst_retired.512b_packed_single"
+    "fp_arith_inst_retired.128b_packed_double"
+    "fp_arith_inst_retired.256b_packed_double"
+    "fp_arith_inst_retired.512b_packed_double"
 )
 
 # TMA events (Intel Top-Down Microarchitecture Analysis)
@@ -88,6 +91,7 @@ TMA_EVENTS=(
     # "topdown-be-bound"
 )
 
+# Show help message function
 show_help() {
     echo -e "${BOLD}perf_tool.sh${NC} - Advanced perf profiling tool for performance analysis"
     echo ""
@@ -103,6 +107,7 @@ show_help() {
     echo "  --run <executable>        Executable to profile (followed by its arguments)"
     echo "  --visualize               Display metrics with analysis and insights"
     echo "  --input <name>            Input file name to visualize"
+    echo "  --no-insights             Skip the automated insights section"
     echo "  --compare <base> <opt>    Compare two metric files side-by-side"
     echo "  --help                    Show this help message"
     echo ""
@@ -166,12 +171,12 @@ record_cache_metrics() {
         exit 1
     fi
 
-    # Check if file exists, add timestamp suffix if so
+    # Check if file exists, rename existing file with timestamp suffix
     if [[ -f "${output_file}.txt" ]]; then
         local timestamp=$(date +%Y%m%d_%H%M%S)
-        local new_output="${output_file}_${timestamp}"
-        echo -e "${YELLOW}File ${output_file}.txt exists, using: ${new_output}.txt${NC}"
-        output_file="$new_output"
+        local backup_file="${output_file}_${timestamp}"
+        mv "${output_file}.txt" "${backup_file}.txt"
+        echo -e "${YELLOW}Existing file renamed to: ${backup_file}.txt${NC}"
     fi
 
     # Combine all events
@@ -214,11 +219,12 @@ record_cache_metrics() {
     echo -e "${GREEN}Recording complete!${NC}"
     echo -e "Metrics saved to: ${BOLD}${output_file}.txt${NC}"
     echo ""
-    echo -e "To visualize: ${CYAN}$0 --visualize --input ${output_file}${NC}"
+    echo -e "To visualize: ${CYAN}bash $0 --visualize --input ${output_file}${NC}"
 }
 
 visualize_metrics() {
     local input_file="$1"
+    local no_insights="$2"
 
     if [[ -z "$input_file" ]]; then
         echo -e "${RED}Error: --input <name> is required${NC}"
@@ -231,6 +237,19 @@ visualize_metrics() {
         exit 1
     fi
 
+    # Detect CPU cache sizes from system
+    local l2_cache_kb=0
+    local l3_cache_kb=0
+    if [[ -f /sys/devices/system/cpu/cpu0/cache/index2/size ]]; then
+        local l2_size=$(cat /sys/devices/system/cpu/cpu0/cache/index2/size 2>/dev/null)
+        # Parse size (e.g., "2048K" -> 2048)
+        l2_cache_kb=$(echo "$l2_size" | sed 's/[^0-9]//g')
+    fi
+    if [[ -f /sys/devices/system/cpu/cpu0/cache/index3/size ]]; then
+        local l3_size=$(cat /sys/devices/system/cpu/cpu0/cache/index3/size 2>/dev/null)
+        l3_cache_kb=$(echo "$l3_size" | sed 's/[^0-9]//g')
+    fi
+
     echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${BOLD}                         Performance Analysis Report${NC}"
     echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════${NC}"
@@ -240,7 +259,8 @@ visualize_metrics() {
 
     # Use awk to parse, format, and generate insights
     awk -v RED="${RED}" -v GREEN="${GREEN}" -v YELLOW="${YELLOW}" -v BLUE="${BLUE}" \
-        -v CYAN="${CYAN}" -v MAGENTA="${MAGENTA}" -v NC="${NC}" -v BOLD="${BOLD}" -v DIM="${DIM}" '
+        -v CYAN="${CYAN}" -v MAGENTA="${MAGENTA}" -v NC="${NC}" -v BOLD="${BOLD}" -v DIM="${DIM}" \
+        -v no_insights="$no_insights" -v l2_cache_kb="$l2_cache_kb" -v l3_cache_kb="$l3_cache_kb" '
     BEGIN {
         # Initialize variables
         time_elapsed = 0
@@ -346,6 +366,9 @@ visualize_metrics() {
             else if (event ~ /128b_packed_single/) friendly[event] = "128b Packed SP"
             else if (event ~ /256b_packed_single/) friendly[event] = "256b Packed SP"
             else if (event ~ /512b_packed_single/) friendly[event] = "512b Packed SP"
+            else if (event ~ /128b_packed_double/) friendly[event] = "128b Packed DP"
+            else if (event ~ /256b_packed_double/) friendly[event] = "256b Packed DP"
+            else if (event ~ /512b_packed_double/) friendly[event] = "512b Packed DP"
         }
         # TMA
         else if (event == "topdown-retiring") { friendly[event] = "Retiring"; category[event] = "TMA" }
@@ -414,13 +437,15 @@ visualize_metrics() {
         stalls_total = metrics["cycle_activity.stalls_total"]
         stalls_mem = metrics["cycle_activity.cycles_mem_any"]
 
-        # IPC
+        # IPC (calibrated for Sapphire Rapids - 6-wide issue, can achieve IPC > 4)
         if (cycles > 0 && instructions > 0) {
             ipc = instructions / cycles
             printf "  " BOLD "IPC (Instructions Per Cycle):" NC " "
-            if (ipc < 0.5) printf YELLOW "%.3f" NC " (Low - CPU stalling)\n", ipc
-            else if (ipc < 1.0) printf YELLOW "%.3f" NC " (Moderate)\n", ipc
-            else printf GREEN "%.3f" NC " (Good)\n", ipc
+            if (ipc < 0.5) printf RED "%.3f" NC " (Very Low - severe stalling)\n", ipc
+            else if (ipc < 1.5) printf YELLOW "%.3f" NC " (Low - significant stalling)\n", ipc
+            else if (ipc < 3.0) printf YELLOW "%.3f" NC " (Moderate - room for improvement)\n", ipc
+            else if (ipc < 4.0) printf GREEN "%.3f" NC " (Good)\n", ipc
+            else printf GREEN "%.3f" NC " (Excellent - near peak)\n", ipc
         }
 
         # CPI
@@ -499,12 +524,14 @@ visualize_metrics() {
             # Scalar: 1 op each
             total_flops += metrics["fp_arith_inst_retired.scalar_single"]
             total_flops += metrics["fp_arith_inst_retired.scalar_double"]
-            # 128b packed: 4 SP ops
+            # SP packed: 4/8/16 ops per instruction
             total_flops += metrics["fp_arith_inst_retired.128b_packed_single"] * 4
-            # 256b packed: 8 SP ops
             total_flops += metrics["fp_arith_inst_retired.256b_packed_single"] * 8
-            # 512b packed: 16 SP ops
             total_flops += metrics["fp_arith_inst_retired.512b_packed_single"] * 16
+            # DP packed: 2/4/8 ops per instruction
+            total_flops += metrics["fp_arith_inst_retired.128b_packed_double"] * 2
+            total_flops += metrics["fp_arith_inst_retired.256b_packed_double"] * 4
+            total_flops += metrics["fp_arith_inst_retired.512b_packed_double"] * 8
 
             if (total_flops > 0) {
                 gflops = total_flops / (time_elapsed * 1e9)
@@ -584,8 +611,9 @@ visualize_metrics() {
         }
 
         # ═══════════════════════════════════════════════════════════════════
-        # INSIGHTS SECTION
+        # INSIGHTS SECTION (skip if --no-insights flag is set)
         # ═══════════════════════════════════════════════════════════════════
+        if (no_insights != "1") {
         print ""
         print BOLD "═══════════════════════════════════════════════════════════════════════════════" NC
         print BOLD "                            Performance Insights" NC
@@ -661,13 +689,22 @@ visualize_metrics() {
             }
         }
 
-        # L2 Cache Analysis
+        # L2 Cache Analysis (uses detected L2 cache size)
         if (l2_refs > 0) {
             l2_miss_rate = (l2_misses * 100.0) / l2_refs
             if (l2_miss_rate > 50) {
                 print YELLOW "⚠ HIGH L2 MISS RATE (" sprintf("%.1f%%", l2_miss_rate) ") - Data not fitting in L2" NC
-                print "  └─ L2 cache typically 1-2 MB per core"
-                print "  └─ " DIM "Recommendation: Reduce working set size or improve access patterns" NC
+                if (l2_cache_kb > 0) {
+                    l2_mb = l2_cache_kb / 1024
+                    target_mb = l2_mb * 0.75  # Target 75% of L2
+                    printf "  └─ L2 cache: %.1f MB per core (detected)\n", l2_mb
+                    printf "  └─ Target working set: ~%.1f MB\n", target_mb
+                } else {
+                    print "  └─ L2 cache: unknown (check /sys/devices/system/cpu/cpu0/cache/)"
+                }
+                print "  └─ " DIM "Recommendations:" NC
+                print "  └─   • For BF16 GEMM: 512x512 to 768x768 tiles"
+                print "  └─   • For FP32 GEMM: 256x256 to 384x384 tiles"
                 print ""
                 insights_count++
                 if (primary_bottleneck == "") primary_bottleneck = "L2 cache misses"
@@ -879,7 +916,145 @@ visualize_metrics() {
                  printf "  └─ DRAM/Remote:      %5.1f%% of memory stalls\n", (dram_stalls * 100.0 / l1d_miss_stalls)
                  print ""
                  insights_count++
+
+                 # Enhanced stall recommendations based on dominant component (SPR-specific)
+                 if (max_component_name == "DRAM Latency") {
+                     print YELLOW "  ⚠ DRAM LATENCY DOMINANT" NC
+                     print "    └─ Memory bandwidth may be saturated"
+                     print "    └─ " DIM "Recommendations:" NC
+                     print "    └─   • Use cache blocking/tiling to reduce DRAM accesses"
+                     print "    └─   • Consider non-temporal stores for write-only buffers"
+                     print "    └─   • Add software prefetching (prefetcht0/prefetcht1)"
+                     print ""
+                 } else if (max_component_name == "L3 Latency") {
+                     print YELLOW "  ⚠ L3 LATENCY DOMINANT" NC
+                     print "    └─ Data exceeds L2 but mostly fits in L3"
+                     print "    └─ " DIM "Recommendations:" NC
+                     if (l2_cache_kb > 0) {
+                         l2_mb = l2_cache_kb / 1024
+                         printf "    └─   • Improve temporal locality within L2 (%.1f MB per core)\n", l2_mb
+                     } else {
+                         print "    └─   • Improve temporal locality within L2"
+                     }
+                     print "    └─   • Check thread placement for L3 sharing conflicts"
+                     print ""
+                 } else if (max_component_name == "L2 Latency") {
+                     print YELLOW "  ⚠ L2 LATENCY DOMINANT" NC
+                     print "    └─ Working set thrashing L2 cache"
+                     print "    └─ " DIM "Recommendations:" NC
+                     if (l2_cache_kb > 0) {
+                         l2_mb = l2_cache_kb / 1024
+                         target_mb = l2_mb * 0.75
+                         printf "    └─   • Tile/block to fit working set in ~%.1f MB (L2 = %.1f MB)\n", target_mb, l2_mb
+                     } else {
+                         print "    └─   • Tile/block to fit working set in L2 cache"
+                     }
+                     print "    └─   • For BF16 GEMM: Try 512x512 tiles"
+                     print "    └─   • For FP32 GEMM: Try 256x256 tiles"
+                     print ""
+                 }
              }
+        }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # SAPPHIRE RAPIDS SPECIFIC INSIGHTS
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Operational Intensity (Compute vs Memory Bound Classification)
+        llc_load_misses = metrics["LLC-load-misses"]
+        if (total_flops > 0 && llc_load_misses > 0) {
+            # OI = FLOPs / Bytes transferred (LLC misses * 64 bytes per cache line)
+            bytes_transferred = llc_load_misses * 64
+            operational_intensity = total_flops / bytes_transferred
+
+            print CYAN "ℹ OPERATIONAL INTENSITY: " sprintf("%.2f", operational_intensity) " FLOPs/byte" NC
+            if (operational_intensity < 5) {
+                print "  └─ Classification: " RED "MEMORY BOUND" NC
+                print "  └─ Performance limited by memory bandwidth, not compute"
+                print "  └─ " DIM "Optimize: Data locality, blocking, prefetching, streaming stores" NC
+                if (primary_bottleneck == "") primary_bottleneck = "Memory Bound (low OI)"
+            } else if (operational_intensity < 15) {
+                print "  └─ Classification: " YELLOW "BALANCED" NC
+                print "  └─ Both memory and compute optimizations will help"
+            } else {
+                print "  └─ Classification: " GREEN "COMPUTE BOUND" NC
+                print "  └─ Performance limited by compute throughput"
+                print "  └─ " DIM "Optimize: Vectorization (AVX-512/AMX), loop unrolling" NC
+            }
+            print ""
+            insights_count++
+        }
+
+        # AVX-512 Width Utilization Check
+        sp_256b = metrics["fp_arith_inst_retired.256b_packed_single"]
+        sp_512b = metrics["fp_arith_inst_retired.512b_packed_single"]
+        dp_256b = metrics["fp_arith_inst_retired.256b_packed_double"]
+        dp_512b = metrics["fp_arith_inst_retired.512b_packed_double"]
+        total_256b = sp_256b + dp_256b
+        total_512b = sp_512b + dp_512b
+
+        if (total_256b > 1000000 && total_512b > 0) {
+            ratio_512b = total_512b / (total_256b + total_512b) * 100
+            if (ratio_512b < 50) {
+                print YELLOW "⚠ SUBOPTIMAL VECTOR WIDTH (" sprintf("%.0f%%", ratio_512b) " using 512-bit)" NC
+                print "  └─ Using mostly 256-bit vectors on AVX-512 capable CPU"
+                print "  └─ " DIM "Recommendations:" NC
+                print "  └─   • Compile with: -march=native -mprefer-vector-width=512"
+                print "  └─   • Use explicit AVX-512 intrinsics for hot loops"
+                print "  └─   • Check for 256-bit fallbacks in libraries"
+                print ""
+                insights_count++
+                if (secondary_bottleneck == "") secondary_bottleneck = "Suboptimal Vector Width"
+            }
+        }
+
+        # AMX-BF16 Recommendation for Matrix Workloads
+        # Trigger: High FP ops + streaming memory pattern + not already using optimal width
+        total_fp_ops = metrics["fp_arith_inst_retired.scalar_single"] + metrics["fp_arith_inst_retired.scalar_double"]
+        total_fp_ops += metrics["fp_arith_inst_retired.128b_packed_single"] + metrics["fp_arith_inst_retired.256b_packed_single"] + metrics["fp_arith_inst_retired.512b_packed_single"]
+        total_fp_ops += metrics["fp_arith_inst_retired.128b_packed_double"] + metrics["fp_arith_inst_retired.256b_packed_double"] + metrics["fp_arith_inst_retired.512b_packed_double"]
+
+        if (total_fp_ops > 100000000) {  # > 100M FP instructions
+            llc_miss_rate = 0
+            if (llc_loads > 0) {
+                llc_miss_rate = (llc_load_misses * 100.0) / llc_loads
+            }
+            # Heuristic: Matrix workload = high FP + streaming pattern (high LLC miss) or memory bound
+            is_matrix_workload = (llc_miss_rate > 15) || (operational_intensity < 10)
+
+            if (is_matrix_workload) {
+                print MAGENTA "ℹ AMX-BF16 RECOMMENDATION" NC
+                print "  └─ Matrix-like workload detected on Sapphire Rapids"
+                print "  └─ Intel AMX can provide " BOLD "8-16x speedup" NC " for BF16/INT8 GEMM"
+                print "  └─ " DIM "Implementation:" NC
+                print "  └─   • Use: _tile_loadd(), _tile_dpbf16ps(), _tile_stored()"
+                print "  └─   • Compile: -mamx-tile -mamx-bf16"
+                print "  └─   • Or use oneDNN/MKL for automatic AMX acceleration"
+                print ""
+                insights_count++
+            }
+        }
+
+        # Memory Bandwidth Saturation Detection (Single-socket SPR: ~300 GB/s DDR5)
+        data_reads = metrics["offcore_requests.data_rd"]
+        if (time_elapsed > 0 && data_reads > 0) {
+            bw_bytes = data_reads * 64
+            bw_gbps = bw_bytes / (time_elapsed * 1024 * 1024 * 1024)
+            # SPR single-socket 8-channel DDR5-4800: ~300 GB/s theoretical, ~250 GB/s practical
+            estimated_peak = 250
+            bw_utilization = (bw_gbps / estimated_peak) * 100
+
+            if (bw_utilization > 70) {
+                print YELLOW "⚠ APPROACHING MEMORY BANDWIDTH LIMIT" NC
+                printf "  └─ Measured: %.1f GB/s (%.0f%% of ~%.0f GB/s estimated peak)\n", bw_gbps, bw_utilization, estimated_peak
+                print "  └─ " DIM "Recommendations:" NC
+                print "  └─   • Use non-temporal stores for write-only buffers"
+                print "  └─   • Add software prefetching (prefetcht0/prefetcht1)"
+                print "  └─   • For BF16: AMX reduces BW pressure via on-chip accumulation"
+                print ""
+                insights_count++
+                if (primary_bottleneck == "") primary_bottleneck = "Memory Bandwidth Saturation"
+            }
         }
 
         # Bottleneck Summary
@@ -897,6 +1072,7 @@ visualize_metrics() {
             print "  Secondary: " DIM "None" NC
         }
         print ""
+        } # End of no_insights check
     }
     ' "$file_path"
 }
@@ -1159,6 +1335,7 @@ EXECUTABLE=""
 EXEC_ARGS=()
 COMPARE_BASE=""
 COMPARE_OPT=""
+NO_INSIGHTS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1168,6 +1345,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --visualize)
             MODE="visualize"
+            shift
+            ;;
+        --no-insights)
+            NO_INSIGHTS="1"
             shift
             ;;
         --compare)
@@ -1212,7 +1393,7 @@ case "$MODE" in
         record_cache_metrics "$OUTPUT" "$EXECUTABLE" "${EXEC_ARGS[@]}"
         ;;
     visualize)
-        visualize_metrics "$INPUT"
+        visualize_metrics "$INPUT" "$NO_INSIGHTS"
         ;;
     compare)
         compare_metrics "$COMPARE_BASE" "$COMPARE_OPT"

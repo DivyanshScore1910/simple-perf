@@ -1,0 +1,3 @@
+*.out
+gemm_vtune_test
+*.txt
