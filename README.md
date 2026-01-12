@@ -2,6 +2,8 @@
 Single bash script for performance measurements and some hints, for CPU.
 
 **NOTE**: Currently optimized on Intel Xeon 4th Gen CPUs only.
+**Refer to [docs](docs.md) for event info**
+
 
 ## Features
 ```bash
@@ -71,12 +73,12 @@ EXAMPLES:
 
 ## RECORD
 ```bash
-$# bash ./perf_tool.sh --record-cache-metrics --output readme_baseline_681123 --run ./gemm_vtune_test 1
+$# bash ./perf_tool.sh --record-cache-metrics --output readme_baseline_775534 --run ./gemm_vtune_test 1
 ══════════════════════════════════════════════════════════════
             Perf Performance Metrics Recording
 ══════════════════════════════════════════════════════════════
 
-Output file: readme_baseline_681123.txt
+Output file: readme_baseline_775534.txt
 Command: ./gemm_vtune_test 1
 
 Environment:
@@ -130,60 +132,60 @@ Profiling complete!
 ========================================
 Performance Statistics:
 ========================================
-  Total time: 103.075 ms
-  Average time per iteration: 1.031 ms (1030.7 us)
-  Throughput: 6250.26 GFLOPS
-  Approx. Memory Bandwidth: 57.35 GB/s
+  Total time: 99.270 ms
+  Average time per iteration: 0.993 ms (992.7 us)
+  Throughput: 6489.83 GFLOPS
+  Approx. Memory Bandwidth: 59.55 GB/s
 
 Cleaning up...
 Done!
 
 Recording complete!
-Metrics saved to: readme_baseline_681123.txt
+Metrics saved to: readme_baseline_775534.txt
 
-To visualize: bash /home/divyansh/simple-perf/perf_tool.sh --visualize --input readme_baseline_681123
+To visualize: bash /home/divyansh/simple-perf/perf_tool.sh --visualize --input readme_baseline_775534
 ```
 
 ## VISUALIZE
 ```bash
-$# bash ./perf_tool.sh --visualize --input readme_baseline_681123
+$# bash ./perf_tool.sh --visualize --input readme_baseline_775534
 ════════════════════════════════════════════════════════════════════════════════
                          Performance Analysis Report
 ════════════════════════════════════════════════════════════════════════════════
 
-Source: readme_baseline_681123.txt
+Source: readme_baseline_775534.txt
 
 ┌────────────────────────────────┬────────────────────┬────────────────────┐
 │ Event                          │              Count │          Rate/Info │
 ├────────────────────────────────┼────────────────────┼────────────────────┤
 │ ── L1 Cache ──                 │                    │                    │
-│   L1D Loads                    │        920,707,358 │                    │
-│   L1D Load Misses              │        976,632,847 │            106.07% │
-│   L1D Stores                   │        337,270,670 │                    │
-│   L1I Misses                   │          7,518,331 │                    │
+│   L1D Loads                    │        900,235,413 │                    │
+│   L1D Load Misses              │        998,208,960 │            110.88% │
+│   L1D Stores                   │        347,997,764 │                    │
+│   L1I Misses                   │          7,298,207 │                    │
 │ ── L2 Cache ──                 │                    │                    │
-│   L2 References                │      1,280,709,046 │                    │
-│   L2 Misses                    │        800,164,862 │                    │
+│   L2 References                │      1,342,348,934 │                    │
+│   L2 Misses                    │        741,853,342 │                    │
 │ ── L3 Cache ──                 │                    │                    │
-│   L3/LLC Loads                 │        562,522,457 │                    │
-│   L3/LLC Load Misses           │            701,127 │              0.12% │
-│   L3/LLC Stores                │          3,078,109 │                    │
-│   L3/LLC Store Misses          │            333,312 │                    │
+│   L3/LLC Loads                 │        475,479,288 │                    │
+│   L3/LLC Load Misses           │          1,821,322 │              0.38% │
+│   L3/LLC Stores                │          2,355,733 │                    │
+│   L3/LLC Store Misses          │              6,545 │                    │
 │ ── Cache ──                    │                    │                    │
-│   Total Cache Refs             │        947,709,713 │                    │
-│   Total Cache Misses           │            598,529 │              0.06% │
+│   Total Cache Refs             │        746,939,682 │                    │
+│   Total Cache Misses           │            375,249 │              0.05% │
 │ ── Stalls ──                   │                    │                    │
-│   Total Stall Cycles           │     31,992,876,117 │                    │
-│   Memory Stall Cycles          │     16,379,155,540 │                    │
-│   L1D Miss Stalls              │      4,591,362,275 │                    │
-│   L2 Miss Stalls               │        913,642,135 │                    │
-│   L3 Miss Stalls               │            231,074 │                    │
+│   Total Stall Cycles           │     31,763,680,870 │                    │
+│   Memory Stall Cycles          │     17,593,346,120 │                    │
+│   L1D Miss Stalls              │      4,238,156,939 │                    │
+│   L2 Miss Stalls               │      1,173,845,649 │                    │
+│   L3 Miss Stalls               │              8,829 │                    │
 │ ── Memory BW ──                │                    │                    │
-│   All Data Reads               │        615,426,641 │                    │
-│   Demand Data Reads            │        386,214,987 │                    │
+│   All Data Reads               │        797,732,307 │                    │
+│   Demand Data Reads            │        463,200,791 │                    │
 │ ── FLOPs ──                    │                    │                    │
-│   Scalar SP FLOPs              │         67,137,390 │                    │
-│   Scalar DP FLOPs              │             28,496 │                    │
+│   Scalar SP FLOPs              │         66,247,217 │                    │
+│   Scalar DP FLOPs              │             25,658 │                    │
 │   128b Packed SP               │                  0 │                    │
 │   256b Packed SP               │                  0 │                    │
 │   512b Packed SP               │                  0 │                    │
@@ -191,56 +193,56 @@ Source: readme_baseline_681123.txt
 │   256b Packed DP               │                  0 │                    │
 │   512b Packed DP               │                  0 │                    │
 │ ── Branch ──                   │                    │                    │
-│   Branch Instructions          │      1,471,460,858 │                    │
-│   Branch Misses                │            761,499 │              0.05% │
+│   Branch Instructions          │      1,567,694,755 │                    │
+│   Branch Misses                │            700,859 │              0.04% │
 │ ── TLB ──                      │                    │                    │
-│   dTLB Load Misses             │             14,929 │                    │
-│   iTLB Load Misses             │              3,541 │                    │
+│   dTLB Load Misses             │             15,558 │                    │
+│   iTLB Load Misses             │              3,820 │                    │
 │ ── CPU ──                      │                    │                    │
-│   CPU Cycles                   │     35,116,397,372 │                    │
-│   Instructions                 │      6,141,273,975 │          IPC: 0.17 │
+│   CPU Cycles                   │     34,832,648,593 │                    │
+│   Instructions                 │      5,872,034,900 │          IPC: 0.17 │
 └────────────────────────────────┴────────────────────┴────────────────────┘
 
 ═══════════════════════════════════════════════════════════════════════════════
                               Derived Metrics
 ═══════════════════════════════════════════════════════════════════════════════
 
-  IPC (Instructions Per Cycle): 0.175 (Very Low - severe stalling)
-  CPI (Cycles Per Instruction): 5.718
-  L1D Miss/Load Ratio: 106.1% (>100% = prefetcher active)
-  L2 Cache Hit Rate: 37.52% (Poor)
-  L3/LLC Load Hit Rate: 99.88% (Excellent)
-  Overall Cache Hit Rate: 99.94%
-  Branch Miss Rate: 0.052% (Excellent)
-  Stall Cycles: 91.1% of cycles
-    └─ Memory Stalls: 46.6% of cycles
-  Memory Intensity: 0.150 loads/instruction
-  GFLOPS: 0.18
+  IPC (Instructions Per Cycle): 0.169 (Very Low - severe stalling)
+  CPI (Cycles Per Instruction): 5.932
+  L1D Miss/Load Ratio: 110.9% (>100% = prefetcher active)
+  L2 Cache Hit Rate: 44.73% (Poor)
+  L3/LLC Load Hit Rate: 99.62% (Excellent)
+  Overall Cache Hit Rate: 99.95%
+  Branch Miss Rate: 0.045% (Excellent)
+  Stall Cycles: 91.2% of cycles
+    └─ Memory Stalls: 50.5% of cycles
+  Memory Intensity: 0.153 loads/instruction
+  GFLOPS: 0.17
   Elapsed Time: 0.379 seconds
 
 ═══════════════════════════════════════════════════════════════════════════════
                             Performance Insights
 ═══════════════════════════════════════════════════════════════════════════════
 
-⚠ HIGH STALL RATE (91.1% of cycles) - CPU mostly waiting
-  └─ Memory-related cycles: 46.6% of total
+⚠ HIGH STALL RATE (91.2% of cycles) - CPU mostly waiting
+  └─ Memory-related cycles: 50.5% of total
   └─ Recommendation: Optimize memory access patterns, improve cache utilization
 
 ⚠ LOW IPC (0.17) - CPU is frequently stalling
-  └─ Memory stalls account for 46.6% of cycles
+  └─ Memory stalls account for 50.5% of cycles
   └─ Recommendation: Improve data locality, consider blocking/tiling
 
-⚠ HIGH L2 MISS RATE (62.5%) - Data not fitting in L2
+⚠ HIGH L2 MISS RATE (55.3%) - Data not fitting in L2
   └─ L2 cache: 2.0 MB per core (detected)
   └─ Target working set: ~1.5 MB
   └─ Recommendations:
   └─   • For BF16 GEMM: 512x512 to 768x768 tiles
   └─   • For FP32 GEMM: 256x256 to 384x384 tiles
 
-✓ EXCELLENT L3 HIT RATE (99.88%) - Data fits in L3
+✓ EXCELLENT L3 HIT RATE (99.62%) - Data fits in L3
   └─ No main memory bandwidth bottleneck
 
-✓ EXCELLENT BRANCH PREDICTION (0.05% miss rate)
+✓ EXCELLENT BRANCH PREDICTION (0.04% miss rate)
   └─ Branch-related optimizations not needed
 
 ℹ ACTIVE PREFETCHING (L1 miss/load ratio: 1.1x)
@@ -250,17 +252,17 @@ Source: readme_baseline_681123.txt
   └─ Code is dominated by scalar instructions
   └─ Recommendation: Use compiler vectorization (-O3, -march=native) or SIMD intrinsics (AVX2/AVX-512)
 
-ℹ MEMORY BANDWIDTH: 96.80 GB/s (Read)
+ℹ MEMORY BANDWIDTH: 125.48 GB/s (Read)
   └─ Note: Verify if this approaches the theoretical peak of your system (e.g. ~100GB/s for Dual DDR5)
 
-⚠ HIGH CORE/L1 STALLS (78.0% of cycles)
+⚠ HIGH CORE/L1 STALLS (79.0% of cycles)
   └─ Stalls not due to L1 misses. Likely L1 hit latency (pointer chasing) or execution dependencies.
   └─ Recommendation: Check for long dependency chains (div/sqrt) or L1-bound pointer chasing.
 
 ℹ MEMORY LATENCY BREAKDOWN
   └─ Dominant Factor: L2 Latency
-  └─ L2 Hit Stalls:     80.1% of memory stalls
-  └─ L3 Hit Stalls:     19.9% of memory stalls
+  └─ L2 Hit Stalls:     72.3% of memory stalls
+  └─ L3 Hit Stalls:     27.7% of memory stalls
   └─ DRAM/Remote:        0.0% of memory stalls
 
   ⚠ L2 LATENCY DOMINANT
@@ -270,7 +272,7 @@ Source: readme_baseline_681123.txt
     └─   • For BF16 GEMM: Try 512x512 tiles
     └─   • For FP32 GEMM: Try 256x256 tiles
 
-ℹ OPERATIONAL INTENSITY: 1.50 FLOPs/byte
+ℹ OPERATIONAL INTENSITY: 0.57 FLOPs/byte
   └─ Classification: MEMORY BOUND
   └─ Performance limited by memory bandwidth, not compute
   └─ Optimize: Data locality, blocking, prefetching, streaming stores
@@ -285,52 +287,62 @@ BOTTLENECK SUMMARY:
 
 ## COMPARE
 ```bash
-$# bash ./perf_tool.sh --compare readme_baseline_681123 readme_optimized_681123
+$# bash ./perf_tool.sh --compare readme_baseline_775534 readme_optimized_775534
 ════════════════════════════════════════════════════════════════════════════════════════════════════
                                     Performance Comparison
 ════════════════════════════════════════════════════════════════════════════════════════════════════
 
-Baseline:  readme_baseline_681123.txt
-Optimized: readme_optimized_681123.txt
+Baseline:  readme_baseline_775534.txt
+Optimized: readme_optimized_775534.txt
 
 ┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐
 │ Metric                         │         Baseline │        Optimized │       Change │
 ├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤
-│ L1D Loads                      │      920,707,358 │      905,402,048 │        -1.7% │
-│ L1D Load Misses                │      976,632,847 │      878,244,444 │       -10.1% │
-│ L1-dcache-stores               │      337,270,670 │      328,377,883 │        -2.6% │
-│ L1-icache-load-misses          │        7,518,331 │        6,503,654 │       -13.5% │
-│ L2 References                  │    1,280,709,046 │    1,101,054,882 │       -14.0% │
-│ L2 Misses                      │      800,164,862 │      708,714,558 │       -11.4% │
-│ L3/LLC Loads                   │      562,522,457 │      504,997,832 │       -10.2% │
-│ L3/LLC Load Misses             │          701,127 │          173,782 │       -75.2% │
-│ LLC-stores                     │        3,078,109 │        2,974,675 │        -3.4% │
-│ LLC-store-misses               │          333,312 │           20,144 │       -94.0% │
-│ Total Cache Refs               │      947,709,713 │      889,955,546 │        -6.1% │
-│ Total Cache Misses             │          598,529 │          193,124 │       -67.7% │
-│ Branch Instructions            │    1,471,460,858 │    1,558,656,632 │        +5.9% │
-│ Branch Misses                  │          761,499 │          761,765 │         0.0% │
-│ dTLB-load-misses               │           14,929 │           12,922 │       -13.4% │
-│ iTLB-load-misses               │            3,541 │            3,697 │         4.4% │
-│ CPU Cycles                     │   35,116,397,372 │   34,117,222,917 │        -2.8% │
-│ Instructions                   │    6,141,273,975 │    6,108,291,264 │        -0.5% │
-│ Total Stall Cycles             │   31,992,876,117 │   30,750,323,199 │        -3.9% │
-│ Memory Stall Cycles            │   16,379,155,540 │   15,130,585,581 │        -7.6% │
-│ L1D Miss Stalls                │    4,591,362,275 │    4,306,200,747 │        -6.2% │
-│ L2 Miss Stalls                 │      913,642,135 │    1,043,901,971 │       +14.3% │
-│ L3 Miss Stalls                 │          231,074 │            5,682 │       -97.5% │
-│ All Data Reads                 │      615,426,641 │      714,138,085 │       +16.0% │
-│ Demand Data Reads              │      386,214,987 │      474,919,668 │       +23.0% │
-│ Scalar SP FLOPs                │       67,137,390 │       66,507,558 │        -0.9% │
-│ Scalar DP FLOPs                │           28,496 │           31,709 │       +11.3% │
+│ L1D Loads                      │      900,235,413 │      976,096,946 │        +8.4% │
+│ L1D Load Misses                │      998,208,960 │      985,195,876 │        -1.3% │
+│ L1-dcache-stores               │      347,997,764 │      329,517,680 │        -5.3% │
+│ L1-icache-load-misses          │        7,298,207 │        4,760,327 │       -34.8% │
+│ L2 References                  │    1,342,348,934 │    1,723,469,132 │       +28.4% │
+│ L2 Misses                      │      741,853,342 │      991,812,715 │       +33.7% │
+│ L3/LLC Loads                   │      475,479,288 │      636,417,109 │       +33.8% │
+│ L3/LLC Load Misses             │        1,821,322 │           78,866 │       -95.7% │
+│ LLC-stores                     │        2,355,733 │        3,498,575 │       +48.5% │
+│ LLC-store-misses               │            6,545 │          345,963 │     +5185.9% │
+│ Total Cache Refs               │      746,939,682 │      857,472,735 │       +14.8% │
+│ Total Cache Misses             │          375,249 │          492,408 │       +31.2% │
+│ Branch Instructions            │    1,567,694,755 │    1,581,069,768 │         0.9% │
+│ Branch Misses                  │          700,859 │          968,432 │       +38.2% │
+│ dTLB-load-misses               │           15,558 │           45,622 │      +193.2% │
+│ iTLB-load-misses               │            3,820 │            8,314 │      +117.6% │
+│ CPU Cycles                     │   34,832,648,593 │   33,528,454,727 │        -3.7% │
+│ Instructions                   │    5,872,034,900 │    5,835,571,283 │        -0.6% │
+│ Total Stall Cycles             │   31,763,680,870 │   30,234,681,582 │        -4.8% │
+│ Memory Stall Cycles            │   17,593,346,120 │   15,308,216,741 │       -13.0% │
+│ L1D Miss Stalls                │    4,238,156,939 │    4,728,861,643 │       +11.6% │
+│ L2 Miss Stalls                 │    1,173,845,649 │      200,273,990 │       -82.9% │
+│ L3 Miss Stalls                 │            8,829 │           81,541 │      +823.6% │
+│ All Data Reads                 │      797,732,307 │      628,127,220 │       -21.3% │
+│ Demand Data Reads              │      463,200,791 │      398,993,696 │       -13.9% │
+│ Scalar SP FLOPs                │       66,247,217 │       59,835,161 │        -9.7% │
+│ Scalar DP FLOPs                │           25,658 │           24,938 │        -2.8% │
 └────────────────────────────────┴──────────────────┴──────────────────┴──────────────┘
 
 Derived Metrics Comparison:
 
-  IPC:                    0.175 →    0.179 (2.4%)
-  L2 Hit Rate:            37.5% →    35.6% (-1.9 pp)
-  L3 Hit Rate:           99.88% →   99.97% (0.09 pp)
-  Elapsed Time:          0.379s →   0.376s (-0.7%)
-  Speedup:             1.01x
+  IPC:                    0.169 →    0.174 (3.2%)
+  L2 Hit Rate:            44.7% →    42.5% (-2.3 pp)
+  L3 Hit Rate:           99.62% →   99.99% (0.37 pp)
+  Elapsed Time:          0.379s →   0.439s (+15.9%)
+  Slowdown:            1.16x
+
+═══════════════════════════════════════════════════════════════════════════════
+                         Performance Explanation
+═══════════════════════════════════════════════════════════════════════════════
+
+  ⚠ L2 Traffic Increased: 1.34B → 1.72B (+28%)
+  ✓ L2 Miss Stalls Reduced: 1.17B → 200.3M cycles (83% fewer)
+  ✓ Data Reuse Improved: 0.6 → 11.9 FLOPs/byte (20.9x better)
+    └─ More compute per byte of DRAM traffic
+  ✓ Stall Cycles Reduced: 1.53B cycles saved
 
 ```

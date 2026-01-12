@@ -1111,6 +1111,14 @@ compare_metrics() {
     # Use awk to parse both files and compare
     awk -v RED="${RED}" -v GREEN="${GREEN}" -v YELLOW="${YELLOW}" -v NC="${NC}" -v BOLD="${BOLD}" \
         -v base_file="$base_path" -v opt_file="$opt_path" '
+    # Helper function to format large numbers (defined outside blocks)
+    function fmt_num(n) {
+        if (n >= 1000000000) return sprintf("%.2fB", n / 1000000000)
+        if (n >= 1000000) return sprintf("%.1fM", n / 1000000)
+        if (n >= 1000) return sprintf("%.1fK", n / 1000)
+        return sprintf("%d", n)
+    }
+
     BEGIN {
         # Parse baseline file
         while ((getline line < base_file) > 0) {
@@ -1315,6 +1323,146 @@ compare_metrics() {
                 slowdown = opt_time / base_time
                 printf "  %-20s " RED "%.2fx" NC "\n", "Slowdown:", slowdown
             }
+        }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # PERFORMANCE EXPLANATION SECTION
+        # ═══════════════════════════════════════════════════════════════════
+        print ""
+        print BOLD "═══════════════════════════════════════════════════════════════════════════════" NC
+        print BOLD "                         Performance Explanation" NC
+        print BOLD "═══════════════════════════════════════════════════════════════════════════════" NC
+        print ""
+
+        explanation_count = 0
+
+        # L2 References (Memory Traffic)
+        base_l2_refs = base["l2_rqsts.references"]
+        opt_l2_refs = opt["l2_rqsts.references"]
+        if (base_l2_refs > 0 && opt_l2_refs > 0) {
+            l2_refs_change = ((opt_l2_refs - base_l2_refs) * 100.0) / base_l2_refs
+            l2_refs_saved = base_l2_refs - opt_l2_refs
+            if (l2_refs_change < -10) {
+                printf "  " GREEN "✓ L2 Traffic Reduced:" NC " %s → %s ", fmt_num(base_l2_refs), fmt_num(opt_l2_refs)
+                printf "(" GREEN "%.0f%% fewer" NC ", saved %s accesses)\n", -l2_refs_change, fmt_num(l2_refs_saved)
+                print "    └─ Better L1 data reuse in optimized version"
+                explanation_count++
+            } else if (l2_refs_change > 10) {
+                printf "  " RED "⚠ L2 Traffic Increased:" NC " %s → %s ", fmt_num(base_l2_refs), fmt_num(opt_l2_refs)
+                printf "(" RED "+%.0f%%" NC ")\n", l2_refs_change
+                explanation_count++
+            }
+        }
+
+        # L2 Miss Stalls (Direct Cycle Savings)
+        base_l2_stalls = base["cycle_activity.stalls_l2_miss"]
+        opt_l2_stalls = opt["cycle_activity.stalls_l2_miss"]
+        if (base_l2_stalls > 0 && opt_l2_stalls > 0) {
+            l2_stalls_change = ((opt_l2_stalls - base_l2_stalls) * 100.0) / base_l2_stalls
+            stalls_saved = base_l2_stalls - opt_l2_stalls
+            if (l2_stalls_change < -20) {
+                printf "  " GREEN "✓ L2 Miss Stalls Reduced:" NC " %s → %s cycles ", fmt_num(base_l2_stalls), fmt_num(opt_l2_stalls)
+                printf "(" GREEN "%.0f%% fewer" NC ")\n", -l2_stalls_change
+                explanation_count++
+            }
+        }
+
+        # LLC/L3 Loads (L2 Miss Traffic)
+        base_llc_loads = base["LLC-loads"]
+        opt_llc_loads = opt["LLC-loads"]
+        if (base_llc_loads > 0 && opt_llc_loads > 0) {
+            llc_change = ((opt_llc_loads - base_llc_loads) * 100.0) / base_llc_loads
+            llc_saved = base_llc_loads - opt_llc_loads
+            if (llc_change < -20) {
+                printf "  " GREEN "✓ L3 Traffic Reduced:" NC " %s → %s ", fmt_num(base_llc_loads), fmt_num(opt_llc_loads)
+                printf "(" GREEN "%.0f%% fewer" NC " L2 misses)\n", -llc_change
+                explanation_count++
+            }
+        }
+
+        # L1D Stores (Write Traffic)
+        base_stores = base["L1-dcache-stores"]
+        opt_stores = opt["L1-dcache-stores"]
+        if (base_stores > 0 && opt_stores > 0) {
+            stores_change = ((opt_stores - base_stores) * 100.0) / base_stores
+            if (stores_change < -20) {
+                printf "  " GREEN "✓ Store Operations Reduced:" NC " %s → %s ", fmt_num(base_stores), fmt_num(opt_stores)
+                printf "(" GREEN "%.0f%% fewer" NC ")\n", -stores_change
+                explanation_count++
+            }
+        }
+
+        # Operational Intensity comparison
+        # Calculate FLOPs for both
+        base_flops = base["fp_arith_inst_retired.scalar_single"] + base["fp_arith_inst_retired.scalar_double"]
+        base_flops += base["fp_arith_inst_retired.128b_packed_single"] * 4 + base["fp_arith_inst_retired.256b_packed_single"] * 8 + base["fp_arith_inst_retired.512b_packed_single"] * 16
+        base_flops += base["fp_arith_inst_retired.128b_packed_double"] * 2 + base["fp_arith_inst_retired.256b_packed_double"] * 4 + base["fp_arith_inst_retired.512b_packed_double"] * 8
+
+        opt_flops = opt["fp_arith_inst_retired.scalar_single"] + opt["fp_arith_inst_retired.scalar_double"]
+        opt_flops += opt["fp_arith_inst_retired.128b_packed_single"] * 4 + opt["fp_arith_inst_retired.256b_packed_single"] * 8 + opt["fp_arith_inst_retired.512b_packed_single"] * 16
+        opt_flops += opt["fp_arith_inst_retired.128b_packed_double"] * 2 + opt["fp_arith_inst_retired.256b_packed_double"] * 4 + opt["fp_arith_inst_retired.512b_packed_double"] * 8
+
+        base_llc_misses = base["LLC-load-misses"]
+        opt_llc_misses = opt["LLC-load-misses"]
+
+        if (base_flops > 0 && base_llc_misses > 0 && opt_flops > 0 && opt_llc_misses > 0) {
+            base_oi = base_flops / (base_llc_misses * 64)
+            opt_oi = opt_flops / (opt_llc_misses * 64)
+            oi_ratio = opt_oi / base_oi
+
+            if (oi_ratio > 1.5) {
+                printf "  " GREEN "✓ Data Reuse Improved:" NC " %.1f → %.1f FLOPs/byte ", base_oi, opt_oi
+                printf "(" GREEN "%.1fx better" NC ")\n", oi_ratio
+                print "    └─ More compute per byte of DRAM traffic"
+                explanation_count++
+            } else if (oi_ratio < 0.67) {
+                printf "  " RED "⚠ Data Reuse Degraded:" NC " %.1f → %.1f FLOPs/byte ", base_oi, opt_oi
+                printf "(" RED "%.1fx worse" NC ")\n", 1/oi_ratio
+                explanation_count++
+            }
+        }
+
+        # Prefetch efficiency (L1 miss/load ratio)
+        base_l1_loads = base["L1-dcache-loads"]
+        base_l1_misses = base["L1-dcache-load-misses"]
+        opt_l1_loads = opt["L1-dcache-loads"]
+        opt_l1_misses = opt["L1-dcache-load-misses"]
+
+        if (base_l1_loads > 0 && opt_l1_loads > 0) {
+            base_pf_ratio = base_l1_misses / base_l1_loads
+            opt_pf_ratio = opt_l1_misses / opt_l1_loads
+
+            if (base_pf_ratio > 1.0 && opt_pf_ratio > 1.0) {
+                # Both have prefetching, compare intensity
+                if (base_pf_ratio > opt_pf_ratio * 1.3) {
+                    printf "  " GREEN "✓ Prefetch Pressure Reduced:" NC " %.1fx → %.1fx miss/load ratio\n", base_pf_ratio, opt_pf_ratio
+                    print "    └─ More efficient memory access pattern"
+                    explanation_count++
+                }
+            }
+        }
+
+        # Total stall cycles comparison
+        base_stalls = base["cycle_activity.stalls_total"]
+        opt_stalls = opt["cycle_activity.stalls_total"]
+        base_cycles = base["cycles"]
+        opt_cycles = opt["cycles"]
+
+        if (base_stalls > 0 && opt_stalls > 0 && base_cycles > 0 && opt_cycles > 0) {
+            stall_cycles_saved = base_stalls - opt_stalls
+            if (stall_cycles_saved > base_cycles * 0.01) {  # More than 1% of baseline cycles
+                printf "  " GREEN "✓ Stall Cycles Reduced:" NC " %s cycles saved\n", fmt_num(stall_cycles_saved)
+                explanation_count++
+            }
+        }
+
+        # Summary
+        if (explanation_count == 0) {
+            print "  No significant metric differences detected."
+            print "  Performance difference may be due to:"
+            print "    • Measurement variance"
+            print "    • System noise"
+            print "    • Metrics not captured by these counters"
         }
 
         print ""
