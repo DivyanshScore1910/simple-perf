@@ -91,6 +91,26 @@ TMA_EVENTS=(
     # "topdown-be-bound"
 )
 
+# Cache-only events (subset of CORE_EVENTS excluding Branch, TLB, CPU cycles/instructions)
+CACHE_CORE_EVENTS=(
+    # L1 Cache
+    "L1-dcache-loads"
+    "L1-dcache-load-misses"
+    "L1-dcache-stores"
+    "L1-icache-load-misses"
+    # L2 Cache (Intel-specific)
+    "l2_rqsts.references"
+    "l2_rqsts.miss"
+    # L3/LLC Cache
+    "LLC-loads"
+    "LLC-load-misses"
+    "LLC-stores"
+    "LLC-store-misses"
+    # Overall cache
+    "cache-references"
+    "cache-misses"
+)
+
 # Show help message function
 show_help() {
     echo -e "${BOLD}perf_tool.sh${NC} - Advanced perf profiling tool for performance analysis"
@@ -108,6 +128,7 @@ show_help() {
     echo "  --visualize               Display metrics with analysis and insights"
     echo "  --input <name>            Input file name to visualize"
     echo "  --no-insights             Skip the automated insights section"
+    echo "  --cache-only              Record only cache-related events (L1/L2/L3, stalls, memory BW)"
     echo "  --compare <base> <opt>    Compare two metric files side-by-side"
     echo "  --help                    Show this help message"
     echo ""
@@ -146,6 +167,9 @@ show_help() {
     echo "  # Visualize metrics with insights"
     echo "  $0 --visualize --input gemm_metrics"
     echo ""
+    echo "  # Record only cache metrics (exclude Branch, TLB, CPU, FLOPs, TMA)"
+    echo "  $0 --record-cache-metrics --cache-only --output cache_metrics --run ./gemm_vtune_test 1"
+    echo ""
     echo "  # Compare baseline vs optimized"
     echo "  $0 --compare baseline optimized"
     echo ""
@@ -179,8 +203,12 @@ record_cache_metrics() {
         echo -e "${YELLOW}Existing file renamed to: ${backup_file}.txt${NC}"
     fi
 
-    # Combine all events
-    local all_events=("${CORE_EVENTS[@]}" "${STALL_EVENTS[@]}" "${MEMORY_EVENTS[@]}" "${FLOPS_EVENTS[@]}" "${TMA_EVENTS[@]}")
+    # Combine all events (filter to cache-only if flag is set)
+    if [[ -n "$CACHE_ONLY" ]]; then
+        local all_events=("${CACHE_CORE_EVENTS[@]}" "${STALL_EVENTS[@]}" "${MEMORY_EVENTS[@]}")
+    else
+        local all_events=("${CORE_EVENTS[@]}" "${STALL_EVENTS[@]}" "${MEMORY_EVENTS[@]}" "${FLOPS_EVENTS[@]}" "${TMA_EVENTS[@]}")
+    fi
 
     # Build event string
     local events=""
@@ -203,11 +231,18 @@ record_cache_metrics() {
     echo "  OMP_NUM_THREADS=${OMP_NUM_THREADS:-<not set>}"
     echo ""
     echo -e "${YELLOW}Events being recorded:${NC}"
-    echo "  Core: ${#CORE_EVENTS[@]} events (cache, branch, TLB, CPU)"
-    echo "  Stall: ${#STALL_EVENTS[@]} events (cycle stall analysis)"
-    echo "  Memory: ${#MEMORY_EVENTS[@]} events (bandwidth)"
-    echo "  FLOPs: ${#FLOPS_EVENTS[@]} events (floating point)"
-    echo "  TMA: ${#TMA_EVENTS[@]} events (top-down analysis)"
+    if [[ -n "$CACHE_ONLY" ]]; then
+        echo "  Cache Core: ${#CACHE_CORE_EVENTS[@]} events (L1, L2, L3 only)"
+        echo "  Stall: ${#STALL_EVENTS[@]} events (cycle stall analysis)"
+        echo "  Memory: ${#MEMORY_EVENTS[@]} events (bandwidth)"
+        echo -e "${CYAN}  [Cache-only mode: Branch, TLB, CPU, FLOPs, TMA events excluded]${NC}"
+    else
+        echo "  Core: ${#CORE_EVENTS[@]} events (cache, branch, TLB, CPU)"
+        echo "  Stall: ${#STALL_EVENTS[@]} events (cycle stall analysis)"
+        echo "  Memory: ${#MEMORY_EVENTS[@]} events (bandwidth)"
+        echo "  FLOPs: ${#FLOPS_EVENTS[@]} events (floating point)"
+        echo "  TMA: ${#TMA_EVENTS[@]} events (top-down analysis)"
+    fi
     echo ""
     echo -e "${GREEN}Starting perf stat...${NC}"
     echo ""
@@ -436,6 +471,35 @@ visualize_metrics() {
         branch_miss = metrics["branch-misses"]
         stalls_total = metrics["cycle_activity.stalls_total"]
         stalls_mem = metrics["cycle_activity.cycles_mem_any"]
+
+        # Detect missing event categories for warning banner
+        missing_cpu = (cycles == 0 || instructions == 0)
+        missing_branch = (branch_instr == 0)
+        missing_tlb = (metrics["dTLB-load-misses"] == 0)
+
+        # Check for FLOPs events (need to aggregate to detect)
+        total_flops_check = 0
+        total_flops_check += metrics["fp_arith_inst_retired.scalar_single"]
+        total_flops_check += metrics["fp_arith_inst_retired.scalar_double"]
+        total_flops_check += metrics["fp_arith_inst_retired.128b_packed_single"]
+        total_flops_check += metrics["fp_arith_inst_retired.256b_packed_single"]
+        total_flops_check += metrics["fp_arith_inst_retired.512b_packed_single"]
+        total_flops_check += metrics["fp_arith_inst_retired.128b_packed_double"]
+        total_flops_check += metrics["fp_arith_inst_retired.256b_packed_double"]
+        total_flops_check += metrics["fp_arith_inst_retired.512b_packed_double"]
+        missing_flops = (total_flops_check == 0)
+
+        # Display warning banner if key metrics are missing
+        if (missing_cpu || missing_flops || missing_branch || missing_tlb) {
+            print ""
+            print YELLOW "⚠ REDUCED METRICS MODE" NC
+            print "Some analysis unavailable due to missing events:"
+            if (missing_cpu) print "  • IPC/CPI analysis (cycles, instructions not recorded)"
+            if (missing_flops) print "  • GFLOPS, vectorization, operational intensity (FLOPs events not recorded)"
+            if (missing_branch) print "  • Branch prediction analysis (branch events not recorded)"
+            if (missing_tlb) print "  • TLB analysis (TLB events not recorded)"
+            print ""
+        }
 
         # IPC (calibrated for Sapphire Rapids - 6-wide issue, can achieve IPC > 4)
         if (cycles > 0 && instructions > 0) {
@@ -1168,10 +1232,51 @@ compare_metrics() {
         }
         close(opt_file)
 
+        # Detect missing event categories for warning banner
+        missing_cpu = (base["cycles"] == 0 || opt["cycles"] == 0 || base["instructions"] == 0 || opt["instructions"] == 0)
+        missing_branch = (base["branch-instructions"] == 0 || opt["branch-instructions"] == 0)
+
+        # Check for FLOPs events (aggregate from both files)
+        base_flops_check = 0
+        base_flops_check += base["fp_arith_inst_retired.scalar_single"]
+        base_flops_check += base["fp_arith_inst_retired.scalar_double"]
+        base_flops_check += base["fp_arith_inst_retired.128b_packed_single"]
+        base_flops_check += base["fp_arith_inst_retired.256b_packed_single"]
+        base_flops_check += base["fp_arith_inst_retired.512b_packed_single"]
+        base_flops_check += base["fp_arith_inst_retired.128b_packed_double"]
+        base_flops_check += base["fp_arith_inst_retired.256b_packed_double"]
+        base_flops_check += base["fp_arith_inst_retired.512b_packed_double"]
+
+        opt_flops_check = 0
+        opt_flops_check += opt["fp_arith_inst_retired.scalar_single"]
+        opt_flops_check += opt["fp_arith_inst_retired.scalar_double"]
+        opt_flops_check += opt["fp_arith_inst_retired.128b_packed_single"]
+        opt_flops_check += opt["fp_arith_inst_retired.256b_packed_single"]
+        opt_flops_check += opt["fp_arith_inst_retired.512b_packed_single"]
+        opt_flops_check += opt["fp_arith_inst_retired.128b_packed_double"]
+        opt_flops_check += opt["fp_arith_inst_retired.256b_packed_double"]
+        opt_flops_check += opt["fp_arith_inst_retired.512b_packed_double"]
+
+        missing_flops = (base_flops_check == 0 || opt_flops_check == 0)
+
         # Print comparison table
         print BOLD "┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐" NC
         printf BOLD "│ %-30s │ %16s │ %16s │ %12s │" NC "\n", "Metric", "Baseline", "Optimized", "Change"
         print BOLD "├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤" NC
+
+        # Display warning banner if key metrics are missing
+        if (missing_cpu || missing_flops || missing_branch) {
+            print ""
+            print YELLOW "⚠ REDUCED METRICS COMPARISON" NC
+            print "Some comparisons unavailable due to missing events in one or both files:"
+            if (missing_cpu) print "  • IPC comparison"
+            if (missing_flops) print "  • GFLOPS and operational intensity comparison"
+            if (missing_branch) print "  • Branch prediction comparison"
+            print ""
+            print BOLD "┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐" NC
+            printf BOLD "│ %-30s │ %16s │ %16s │ %12s │" NC "\n", "Metric", "Baseline", "Optimized", "Change"
+            print BOLD "├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤" NC
+        }
 
         for (i = 1; i <= event_count; i++) {
             ev = event_order[i]
@@ -1484,6 +1589,7 @@ EXEC_ARGS=()
 COMPARE_BASE=""
 COMPARE_OPT=""
 NO_INSIGHTS=""
+CACHE_ONLY=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1497,6 +1603,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-insights)
             NO_INSIGHTS="1"
+            shift
+            ;;
+        --cache-only)
+            CACHE_ONLY="1"
             shift
             ;;
         --compare)
