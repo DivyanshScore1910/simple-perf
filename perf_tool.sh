@@ -146,14 +146,14 @@ show_help() {
     echo "    cycle_activity.stalls_l2_miss, stalls_l3_miss"
     echo ""
     echo -e "  ${CYAN}Memory Bandwidth:${NC}"
-    echo "    offcore_requests.all_data_rd, demand_data_rd"
+    echo "    offcore_requests.data_rd, offcore_requests.demand_data_rd"
     echo ""
     echo -e "  ${CYAN}Floating Point:${NC}"
     echo "    fp_arith_inst_retired.scalar_single, scalar_double"
     echo "    fp_arith_inst_retired.128b_packed, 256b_packed, 512b_packed"
     echo ""
     echo -e "  ${CYAN}Top-Down Analysis (TMA):${NC}"
-    echo "    topdown-retiring, topdown-bad-spec, topdown-fe-bound, topdown-be-bound"
+    echo "    Disabled by default for per-process profiling (requires system-wide mode)"
     echo ""
     echo -e "  ${CYAN}Other:${NC}"
     echo "    Branch:     branch-instructions, branch-misses"
@@ -180,20 +180,41 @@ show_help() {
     echo ""
 }
 
+event_is_supported() {
+    local event="$1"
+    local output
+
+    if output=$(perf stat -e "$event" -- true 2>&1 >/dev/null); then
+        return 0
+    fi
+
+    # If perf fails because the event is unknown, skip it. Other failures
+    # such as perf_event_paranoid permissions are handled by the real run.
+    if [[ "$output" == *"Bad event name"* ]] || [[ "$output" == *"Unable to find event"* ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
 record_cache_metrics() {
     local output_file="$1"
     shift
-    local executable="$@"
+    local -a command=("$@")
+    local command_display=""
 
     if [[ -z "$output_file" ]]; then
         echo -e "${RED}Error: --output <name> is required${NC}"
         exit 1
     fi
 
-    if [[ -z "$executable" ]]; then
+    if [[ ${#command[@]} -eq 0 ]]; then
         echo -e "${RED}Error: --run <executable> is required${NC}"
         exit 1
     fi
+
+    printf -v command_display "%q " "${command[@]}"
+    command_display="${command_display% }"
 
     # Check if file exists, rename existing file with timestamp suffix
     if [[ -f "${output_file}.txt" ]]; then
@@ -210,6 +231,22 @@ record_cache_metrics() {
         local all_events=("${CORE_EVENTS[@]}" "${STALL_EVENTS[@]}" "${MEMORY_EVENTS[@]}" "${FLOPS_EVENTS[@]}" "${TMA_EVENTS[@]}")
     fi
 
+    local supported_events=()
+    local skipped_events=()
+    for event in "${all_events[@]}"; do
+        if event_is_supported "$event"; then
+            supported_events+=("$event")
+        else
+            skipped_events+=("$event")
+        fi
+    done
+    all_events=("${supported_events[@]}")
+
+    if [[ ${#all_events[@]} -eq 0 ]]; then
+        echo -e "${RED}Error: No supported perf events found on this system${NC}"
+        exit 1
+    fi
+
     # Build event string
     local events=""
     for event in "${all_events[@]}"; do
@@ -224,7 +261,7 @@ record_cache_metrics() {
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
     echo ""
     echo -e "${YELLOW}Output file:${NC} ${output_file}.txt"
-    echo -e "${YELLOW}Command:${NC} ${executable}"
+    echo -e "${YELLOW}Command:${NC} ${command_display}"
     echo ""
     echo -e "${YELLOW}Environment:${NC}"
     echo "  LD_PRELOAD=${LD_PRELOAD:-<not set>}"
@@ -243,12 +280,15 @@ record_cache_metrics() {
         echo "  FLOPs: ${#FLOPS_EVENTS[@]} events (floating point)"
         echo "  TMA: ${#TMA_EVENTS[@]} events (top-down analysis)"
     fi
+    if [[ ${#skipped_events[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Skipped unsupported events:${NC} ${skipped_events[*]}"
+    fi
     echo ""
     echo -e "${GREEN}Starting perf stat...${NC}"
     echo ""
 
     # Run perf stat
-    perf stat -e "$events" -o "${output_file}.txt" -- $executable
+    perf stat -e "$events" -o "${output_file}.txt" -- "${command[@]}"
 
     echo ""
     echo -e "${GREEN}Recording complete!${NC}"
@@ -1173,7 +1213,7 @@ compare_metrics() {
     echo ""
 
     # Use awk to parse both files and compare
-    awk -v RED="${RED}" -v GREEN="${GREEN}" -v YELLOW="${YELLOW}" -v NC="${NC}" -v BOLD="${BOLD}" \
+    if ! awk -v RED="${RED}" -v GREEN="${GREEN}" -v YELLOW="${YELLOW}" -v NC="${NC}" -v BOLD="${BOLD}" \
         -v base_file="$base_path" -v opt_file="$opt_path" '
     # Helper function to format large numbers (defined outside blocks)
     function fmt_num(n) {
@@ -1259,24 +1299,20 @@ compare_metrics() {
 
         missing_flops = (base_flops_check == 0 || opt_flops_check == 0)
 
-        # Print comparison table
-        print BOLD "┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐" NC
-        printf BOLD "│ %-30s │ %16s │ %16s │ %12s │" NC "\n", "Metric", "Baseline", "Optimized", "Change"
-        print BOLD "├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤" NC
-
         # Display warning banner if key metrics are missing
         if (missing_cpu || missing_flops || missing_branch) {
-            print ""
             print YELLOW "⚠ REDUCED METRICS COMPARISON" NC
             print "Some comparisons unavailable due to missing events in one or both files:"
             if (missing_cpu) print "  • IPC comparison"
             if (missing_flops) print "  • GFLOPS and operational intensity comparison"
             if (missing_branch) print "  • Branch prediction comparison"
             print ""
-            print BOLD "┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐" NC
-            printf BOLD "│ %-30s │ %16s │ %16s │ %12s │" NC "\n", "Metric", "Baseline", "Optimized", "Change"
-            print BOLD "├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤" NC
         }
+
+        # Print comparison table
+        print BOLD "┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐" NC
+        printf BOLD "│ %-30s │ %16s │ %16s │ %12s │" NC "\n", "Metric", "Baseline", "Optimized", "Change"
+        print BOLD "├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤" NC
 
         for (i = 1; i <= event_count; i++) {
             ev = event_order[i]
@@ -1572,9 +1608,8 @@ compare_metrics() {
 
         print ""
     }
-    ' 2>/dev/null
-
-    if [[ $? -ne 0 ]]; then
+    '
+    then
         echo -e "${RED}Error parsing metric files${NC}"
         exit 1
     fi
@@ -1610,20 +1645,37 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --compare)
+            if [[ $# -lt 3 ]]; then
+                echo -e "${RED}Error: --compare requires two file names${NC}"
+                echo "Usage: $0 --compare <baseline> <optimized>"
+                exit 1
+            fi
             MODE="compare"
             COMPARE_BASE="$2"
             COMPARE_OPT="$3"
             shift 3
             ;;
         --output)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --output <name> is required${NC}"
+                exit 1
+            fi
             OUTPUT="$2"
             shift 2
             ;;
         --input)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --input <name> is required${NC}"
+                exit 1
+            fi
             INPUT="$2"
             shift 2
             ;;
         --run)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --run <executable> is required${NC}"
+                exit 1
+            fi
             shift
             EXECUTABLE="$1"
             shift
