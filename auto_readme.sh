@@ -65,6 +65,14 @@ cat > "$GENERATED_README" << 'HEADER'
 Single bash script for performance measurements and some hints, for CPU.
 **NOTE**: Currently optimized on Intel Xeon 4th Gen CPUs only.
 
+## GEMM Hardware Profile
+```bash
+$# bash ./perf_tool.sh --profile gemm --output gemm_hw --run <gemm_binary> [args...]
+$# bash ./perf_tool.sh --visualize --agent --input gemm_hw
+```
+
+The GEMM profile records cache hit rates, AMX busy cycles, execution-port utilization, DRAM read/write bandwidth, and unhalted/reference cycle ratios where the local PMU exposes those events. It uses system-wide `perf stat -a` while the command runs for uncore DRAM/topdown counters.
+
 ## Features
 ```bash
 HEADER

@@ -13,6 +13,18 @@ This document explains the hardware events collected by `perf_tool.sh` and how t
 | cycle_activity.stalls_total | Stalled cycles | <25% of cycles | >50% of cycles | Fix bottleneck |
 | branch-misses | Mispredictions | <1% of branches | >5% of branches | PGO, eliminate branches |
 | IPC | Efficiency | >2.0 | <0.5 | Reduce stalls |
+| r02b7 | AMX busy cycles (`EXE.AMX_BUSY`) | High when AMX GEMM is active | Near zero for expected AMX path | Verify AMX dispatch |
+| uncore_imc/cas_count_read/write/ | DRAM read/write bytes | Below platform peak | Near sustained peak | Reduce memory traffic |
+| cpu_clk_unhalted.thread/ref_tsc | Unhalted/reference cycle ratio | Workload dependent | Unexpectedly low | Check CPU residency/frequency |
+
+Use `--profile gemm` for a GEMM-focused collection preset:
+
+```bash
+./perf_tool.sh --profile gemm --output gemm_hw --run ./my_gemm [args...]
+./perf_tool.sh --visualize --agent --input gemm_hw
+```
+
+`--profile gemm` uses `perf stat -a` while the command runs because uncore IMC DRAM counters and some topdown counters are system-wide. Run on a quiet system or pin the workload when you need low-noise numbers.
 
 ---
 
@@ -293,6 +305,47 @@ Prefetch ratio = Prefetch reads / data_rd
 **Interpretation:**
 - High prefetch ratio (30-50%): Predictable access pattern, prefetcher helping
 - Low prefetch ratio (<10%): Random access pattern, prefetcher not effective
+
+### uncore_imc/cas_count_read/ and uncore_imc/cas_count_write/
+**What they measure:** Memory-controller read and write traffic. On this system `perf` reports these with byte units such as `MiB`.
+
+**Bandwidth calculation used by `--profile gemm`:**
+```
+Read_BW  = cas_count_read_bytes / elapsed_time
+Write_BW = cas_count_write_bytes / elapsed_time
+Total_BW = (read_bytes + write_bytes) / elapsed_time
+```
+
+These counters are system-wide uncore counters. They measure all DRAM traffic during the profiled command, not just the process, so isolate the GEMM workload for accurate bandwidth.
+
+---
+
+## GEMM Hardware Profile Events
+
+The `--profile gemm` preset adds events for AMX, port utilization, DRAM bandwidth, and CPU unhalted/reference cycle ratios. Unsupported events are skipped with a warning so the same command remains usable across kernel/perf versions. Raw encodings below follow Intel PerfMon event definitions for recent Xeon server CPUs: <https://perfmon-events.intel.com/platforms/graniterapids/core-events/core/>.
+
+### AMX TMUL Busy Cycles
+
+`r02b7` is the raw encoding for Intel `EXE.AMX_BUSY` (`EventSel=B7H`, `UMask=02H`). It counts cycles where the AMX unit is busy. A BF16/INT8 AMX GEMM should show non-zero AMX busy cycles; a near-zero value usually means the workload used AVX/scalar code or the kernel/perf PMU data does not expose this event.
+
+### Port Utilization Cycles
+
+The profile records raw encodings for Intel `EXE_ACTIVITY` port-utilization events:
+
+| Event | Meaning |
+|-------|---------|
+| `r02a6` | Cycles with 1 executed uop port utilized |
+| `r04a6` | Cycles with 2 executed uop ports utilized |
+| `r08a6` | Cycles with 3 executed uop ports utilized |
+| `r10a6` | Cycles with 4 executed uop ports utilized |
+| `cpu/event=0xa6,umask=0x21,cmask=0x5/` | Load-bound execution cycles |
+| `cpu/event=0xa6,umask=0x40,cmask=0x2/` | Store-bound execution cycles |
+
+The tool reports each as a percentage of `cycles`. These are execution-port pressure indicators, not per-port pipeline diagrams.
+
+### CPU Unhalted / Reference Cycles
+
+`cpu_clk_unhalted.thread / cpu_clk_unhalted.ref_tsc` shows unhalted core cycles relative to reference TSC cycles. It can exceed 100% when cores run above the reference frequency, so interpret it as an activity/frequency ratio rather than a bounded utilization percentage.
 
 ---
 

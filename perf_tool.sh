@@ -91,6 +91,31 @@ TMA_EVENTS=(
     # "topdown-be-bound"
 )
 
+# GEMM hardware profile. Raw events follow Intel PerfMon encodings:
+# EXE.AMX_BUSY=r02b7, EXE_ACTIVITY.{1,2,3,4}_PORTS_UTIL=r{02,04,08,10}a6.
+GEMM_EVENTS=(
+    "${CORE_EVENTS[@]}"
+    "ref-cycles"
+    "cpu_clk_unhalted.thread"
+    "cpu_clk_unhalted.ref_tsc"
+    "r02b7"
+    "r02a6"
+    "r04a6"
+    "r08a6"
+    "r10a6"
+    "cpu/event=0xa6,umask=0x21,cmask=0x5/"
+    "cpu/event=0xa6,umask=0x40,cmask=0x2/"
+    "uncore_imc/cas_count_read/"
+    "uncore_imc/cas_count_write/"
+    "topdown-retiring"
+    "topdown-be-bound"
+    "topdown-fe-bound"
+    "topdown-bad-spec"
+    "topdown-mem-bound"
+    "topdown-heavy-ops"
+    "topdown-br-mispredict"
+)
+
 # Cache-only events (subset of CORE_EVENTS excluding Branch, TLB, CPU cycles/instructions)
 CACHE_CORE_EVENTS=(
     # L1 Cache
@@ -129,6 +154,8 @@ show_help() {
     echo "  --input <name>            Input file name to visualize"
     echo "  --no-insights             Skip the automated insights section"
     echo "  --cache-only              Record only cache-related events (L1/L2/L3, stalls, memory BW)"
+    echo "  --profile gemm            Record GEMM-focused core, AMX, port, CPU, and DRAM events"
+    echo "  --agent                   Render simple markdown tables for agent/code parsing"
     echo "  --compare <base> <opt>    Compare two metric files side-by-side"
     echo "  --help                    Show this help message"
     echo ""
@@ -173,6 +200,10 @@ show_help() {
     echo "  # Compare baseline vs optimized"
     echo "  $0 --compare baseline optimized"
     echo ""
+    echo "  # GEMM hardware profile with markdown output"
+    echo "  $0 --record-cache-metrics --profile gemm --output gemm_hw --run ./gemm_vtune_test 1"
+    echo "  $0 --visualize --agent --input gemm_hw"
+    echo ""
     echo "  # With environment variables"
     echo "  export LD_PRELOAD=/path/to/libgomp.so"
     echo "  export OMP_NUM_THREADS=56"
@@ -184,13 +215,20 @@ event_is_supported() {
     local event="$1"
     local output
 
-    if output=$(perf stat -e "$event" -- true 2>&1 >/dev/null); then
+    if output=$(perf stat "${PERF_SCOPE_ARGS[@]}" -e "$event" -- true 2>&1 >/dev/null); then
+        if [[ "$output" == *"<not supported>"* ]] || [[ "$output" == *"<not counted>"* ]]; then
+            return 1
+        fi
         return 0
     fi
 
     # If perf fails because the event is unknown, skip it. Other failures
     # such as perf_event_paranoid permissions are handled by the real run.
-    if [[ "$output" == *"Bad event name"* ]] || [[ "$output" == *"Unable to find event"* ]]; then
+    if [[ "$output" == *"Bad event name"* ]] ||
+       [[ "$output" == *"Unable to find event"* ]] ||
+       [[ "$output" == *"Invalid event"* ]] ||
+       [[ "$output" == *"Invalid argument"* ]] ||
+       [[ "$output" == *"<not supported>"* ]]; then
         return 1
     fi
 
@@ -224,8 +262,13 @@ record_cache_metrics() {
         echo -e "${YELLOW}Existing file renamed to: ${backup_file}.txt${NC}"
     fi
 
-    # Combine all events (filter to cache-only if flag is set)
-    if [[ -n "$CACHE_ONLY" ]]; then
+    PERF_SCOPE_ARGS=()
+
+    # Combine all events (filter to requested profile if set)
+    if [[ "$PROFILE" == "gemm" ]]; then
+        local all_events=("${GEMM_EVENTS[@]}")
+        PERF_SCOPE_ARGS=(-a)
+    elif [[ -n "$CACHE_ONLY" ]]; then
         local all_events=("${CACHE_CORE_EVENTS[@]}" "${STALL_EVENTS[@]}" "${MEMORY_EVENTS[@]}")
     else
         local all_events=("${CORE_EVENTS[@]}" "${STALL_EVENTS[@]}" "${MEMORY_EVENTS[@]}" "${FLOPS_EVENTS[@]}" "${TMA_EVENTS[@]}")
@@ -247,13 +290,10 @@ record_cache_metrics() {
         exit 1
     fi
 
-    # Build event string
-    local events=""
+    # Build event arguments. Separate -e flags keep raw events with commas intact.
+    local event_args=()
     for event in "${all_events[@]}"; do
-        if [[ -n "$events" ]]; then
-            events="${events},"
-        fi
-        events="${events}${event}"
+        event_args+=(-e "$event")
     done
 
     echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
@@ -268,7 +308,10 @@ record_cache_metrics() {
     echo "  OMP_NUM_THREADS=${OMP_NUM_THREADS:-<not set>}"
     echo ""
     echo -e "${YELLOW}Events being recorded:${NC}"
-    if [[ -n "$CACHE_ONLY" ]]; then
+    if [[ "$PROFILE" == "gemm" ]]; then
+        echo "  Profile: gemm (${#GEMM_EVENTS[@]} requested events)"
+        echo "  Scope: system-wide while command runs (-a; required for uncore DRAM/topdown events)"
+    elif [[ -n "$CACHE_ONLY" ]]; then
         echo "  Cache Core: ${#CACHE_CORE_EVENTS[@]} events (L1, L2, L3 only)"
         echo "  Stall: ${#STALL_EVENTS[@]} events (cycle stall analysis)"
         echo "  Memory: ${#MEMORY_EVENTS[@]} events (bandwidth)"
@@ -288,7 +331,7 @@ record_cache_metrics() {
     echo ""
 
     # Run perf stat
-    perf stat -e "$events" -o "${output_file}.txt" -- "${command[@]}"
+    perf stat "${PERF_SCOPE_ARGS[@]}" "${event_args[@]}" -o "${output_file}.txt" -- "${command[@]}"
 
     echo ""
     echo -e "${GREEN}Recording complete!${NC}"
@@ -300,6 +343,7 @@ record_cache_metrics() {
 visualize_metrics() {
     local input_file="$1"
     local no_insights="$2"
+    local agent_mode="$3"
 
     if [[ -z "$input_file" ]]; then
         echo -e "${RED}Error: --input <name> is required${NC}"
@@ -325,17 +369,42 @@ visualize_metrics() {
         l3_cache_kb=$(echo "$l3_size" | sed 's/[^0-9]//g')
     fi
 
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}                         Performance Analysis Report${NC}"
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════${NC}"
-    echo ""
-    echo -e "${YELLOW}Source:${NC} ${file_path}"
-    echo ""
+    if [[ -n "$agent_mode" ]]; then
+        echo "# Performance Analysis Report"
+        echo ""
+        echo "Source: \`${file_path}\`"
+        echo ""
+    else
+        echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}                         Performance Analysis Report${NC}"
+        echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "${YELLOW}Source:${NC} ${file_path}"
+        echo ""
+    fi
 
     # Use awk to parse, format, and generate insights
     awk -v RED="${RED}" -v GREEN="${GREEN}" -v YELLOW="${YELLOW}" -v BLUE="${BLUE}" \
         -v CYAN="${CYAN}" -v MAGENTA="${MAGENTA}" -v NC="${NC}" -v BOLD="${BOLD}" -v DIM="${DIM}" \
-        -v no_insights="$no_insights" -v l2_cache_kb="$l2_cache_kb" -v l3_cache_kb="$l3_cache_kb" '
+        -v no_insights="$no_insights" -v agent="$agent_mode" -v l2_cache_kb="$l2_cache_kb" -v l3_cache_kb="$l3_cache_kb" '
+    function scale_count(n, unit) {
+        if (unit == "B") return n
+        if (unit == "KiB") return n * 1024
+        if (unit == "MiB") return n * 1024 * 1024
+        if (unit == "GiB") return n * 1024 * 1024 * 1024
+        if (unit == "K") return n * 1000
+        if (unit == "M") return n * 1000000
+        if (unit == "G") return n * 1000000000
+        return n
+    }
+    function pct(num, den) { return den > 0 ? sprintf("%.2f%%", (num * 100.0) / den) : "N/A" }
+    function hit_pct(miss, total) { return total > 0 ? sprintf("%.2f%%", 100.0 - (miss * 100.0 / total)) : "N/A" }
+    function mdrow(a, b, c, d) {
+        gsub(/\|/, "\\|", a); gsub(/\|/, "\\|", b); gsub(/\|/, "\\|", c); gsub(/\|/, "\\|", d)
+        print "| " a " | " b " | " c " | " d " |"
+    }
+    function metric_value(event) { return (event in metrics_fmt) ? metrics_fmt[event] : "N/A" }
+    function raw_value(event) { return (event in metrics) ? metrics[event] : 0 }
     BEGIN {
         # Initialize variables
         time_elapsed = 0
@@ -363,6 +432,7 @@ visualize_metrics() {
 
         # Handle "<not counted>" or "<not supported>" cases
         if ($1 ~ /^</) {
+            if ($0 ~ /<not supported>/ || $0 ~ /<not counted>/) next
             count_fmt = "<N/A>"
             count = 0
             event = $2
@@ -372,6 +442,11 @@ visualize_metrics() {
             gsub(/,/, "", count)
             count = count + 0
             event = $2
+            if (($2 == "B" || $2 == "KiB" || $2 == "MiB" || $2 == "GiB" || $2 == "K" || $2 == "M" || $2 == "G") && $3 != "") {
+                count_fmt = $1 " " $2
+                count = scale_count(count, $2)
+                event = $3
+            }
         }
 
         # Extract rate info
@@ -424,6 +499,9 @@ visualize_metrics() {
         # CPU
         else if (event == "cycles") { friendly[event] = "CPU Cycles"; category[event] = "CPU" }
         else if (event == "instructions") { friendly[event] = "Instructions"; category[event] = "CPU" }
+        else if (event == "ref-cycles") { friendly[event] = "Reference Cycles"; category[event] = "CPU" }
+        else if (event == "cpu_clk_unhalted.thread") { friendly[event] = "Unhalted Thread Cycles"; category[event] = "CPU" }
+        else if (event == "cpu_clk_unhalted.ref_tsc") { friendly[event] = "Unhalted Ref TSC Cycles"; category[event] = "CPU" }
         # Stalls
         else if (event == "cycle_activity.stalls_total") { friendly[event] = "Total Stall Cycles"; category[event] = "Stalls" }
         else if (event == "cycle_activity.cycles_mem_any") { friendly[event] = "Memory Stall Cycles"; category[event] = "Stalls" }
@@ -433,6 +511,16 @@ visualize_metrics() {
         # Memory
         else if (event == "offcore_requests.data_rd") { friendly[event] = "All Data Reads"; category[event] = "Memory BW" }
         else if (event == "offcore_requests.demand_data_rd") { friendly[event] = "Demand Data Reads"; category[event] = "Memory BW" }
+        else if (event == "uncore_imc/cas_count_read/") { friendly[event] = "DRAM Read Bytes"; category[event] = "Memory BW" }
+        else if (event == "uncore_imc/cas_count_write/") { friendly[event] = "DRAM Write Bytes"; category[event] = "Memory BW" }
+        # GEMM hardware profile
+        else if (event == "r02b7") { friendly[event] = "AMX Busy Cycles"; category[event] = "AMX" }
+        else if (event == "r02a6") { friendly[event] = "1 Port Util Cycles"; category[event] = "Port Util" }
+        else if (event == "r04a6") { friendly[event] = "2 Port Util Cycles"; category[event] = "Port Util" }
+        else if (event == "r08a6") { friendly[event] = "3 Port Util Cycles"; category[event] = "Port Util" }
+        else if (event == "r10a6") { friendly[event] = "4 Port Util Cycles"; category[event] = "Port Util" }
+        else if (event == "cpu/event=0xa6,umask=0x21,cmask=0x5/") { friendly[event] = "Load Bound Cycles"; category[event] = "Port Util" }
+        else if (event == "cpu/event=0xa6,umask=0x40,cmask=0x2/") { friendly[event] = "Store Bound Cycles"; category[event] = "Port Util" }
         # FLOPs
         else if (event ~ /fp_arith_inst_retired/) {
             category[event] = "FLOPs"
@@ -450,9 +538,79 @@ visualize_metrics() {
         else if (event == "topdown-bad-spec") { friendly[event] = "Bad Speculation"; category[event] = "TMA" }
         else if (event == "topdown-fe-bound") { friendly[event] = "Frontend Bound"; category[event] = "TMA" }
         else if (event == "topdown-be-bound") { friendly[event] = "Backend Bound"; category[event] = "TMA" }
+        else if (event ~ /^topdown-/) { friendly[event] = event; category[event] = "TMA" }
     }
 
     END {
+        if (agent == "1") {
+            print "## Recorded Events"
+            print ""
+            print "| Category | Event | Count | Rate/Info |"
+            print "|---|---:|---:|---|"
+
+            cat_order[1] = "L1 Cache"; cat_order[2] = "L2 Cache"; cat_order[3] = "L3 Cache"
+            cat_order[4] = "Cache"; cat_order[5] = "Stalls"; cat_order[6] = "Memory BW"
+            cat_order[7] = "AMX"; cat_order[8] = "Port Util"; cat_order[9] = "FLOPs"
+            cat_order[10] = "TMA"; cat_order[11] = "Branch"; cat_order[12] = "TLB"
+            cat_order[13] = "CPU"; cat_order[14] = "Other"
+            for (c = 1; c <= 14; c++) {
+                current_cat = cat_order[c]
+                for (i = 1; i <= metric_count; i++) {
+                    ev = metric_order[i]
+                    if (category[ev] == current_cat) {
+                        mdrow(current_cat, friendly[ev], metrics_fmt[ev], metrics_rate[ev])
+                    }
+                }
+            }
+
+            cycles = raw_value("cycles")
+            instructions = raw_value("instructions")
+            ref_cycles = raw_value("ref-cycles")
+            unhalted = raw_value("cpu_clk_unhalted.thread")
+            unhalted_ref = raw_value("cpu_clk_unhalted.ref_tsc")
+            l1_loads = raw_value("L1-dcache-loads")
+            l1_misses = raw_value("L1-dcache-load-misses")
+            l2_refs = raw_value("l2_rqsts.references")
+            l2_misses = raw_value("l2_rqsts.miss")
+            llc_loads = raw_value("LLC-loads")
+            llc_load_misses = raw_value("LLC-load-misses")
+            dram_read = raw_value("uncore_imc/cas_count_read/")
+            dram_write = raw_value("uncore_imc/cas_count_write/")
+            amx_busy = raw_value("r02b7")
+
+            print ""
+            print "## Derived Metrics"
+            print ""
+            print "| Metric | Value | Inputs | Notes |"
+            print "|---|---:|---|---|"
+            if (cycles > 0 && instructions > 0) mdrow("IPC", sprintf("%.3f", instructions / cycles), "instructions / cycles", "")
+            if (cycles > 0 && instructions > 0) mdrow("CPI", sprintf("%.3f", cycles / instructions), "cycles / instructions", "")
+            if (l1_loads > 0) mdrow("L1D hit rate", hit_pct(l1_misses, l1_loads), "L1-dcache-loads, L1-dcache-load-misses", "")
+            if (l1_loads > 0) mdrow("L1D miss/load", pct(l1_misses, l1_loads), "L1-dcache-load-misses / L1-dcache-loads", "")
+            if (l2_refs > 0) mdrow("L2 hit rate", hit_pct(l2_misses, l2_refs), "l2_rqsts.references, l2_rqsts.miss", "")
+            else mdrow("L2 hit rate", "N/A", "L2 miss/reference events not recorded", "")
+            if (llc_loads > 0) mdrow("L3/LLC hit rate", hit_pct(llc_load_misses, llc_loads), "LLC-loads, LLC-load-misses", "")
+            if (ref_cycles > 0) mdrow("CPU cycles/ref-cycles", pct(cycles, ref_cycles), "cycles / ref-cycles", "Can exceed 100% when core frequency is above reference")
+            if (unhalted_ref > 0) mdrow("CPU unhalted/ref ratio", pct(unhalted, unhalted_ref), "cpu_clk_unhalted.thread / cpu_clk_unhalted.ref_tsc", "Can exceed 100% when core frequency is above reference")
+            if (cycles > 0 && amx_busy > 0) mdrow("AMX busy cycles", sprintf("%.0f (%.2f%% of cycles)", amx_busy, amx_busy * 100.0 / cycles), "EXE.AMX_BUSY raw r02b7", "")
+            else mdrow("AMX busy cycles", metric_value("r02b7"), "EXE.AMX_BUSY raw r02b7", "")
+            if (time_elapsed > 0 && (dram_read + dram_write) > 0) {
+                mdrow("DRAM read BW", sprintf("%.2f GiB/s", dram_read / time_elapsed / 1024 / 1024 / 1024), "uncore_imc/cas_count_read/", "")
+                mdrow("DRAM write BW", sprintf("%.2f GiB/s", dram_write / time_elapsed / 1024 / 1024 / 1024), "uncore_imc/cas_count_write/", "")
+                mdrow("DRAM total BW", sprintf("%.2f GiB/s", (dram_read + dram_write) / time_elapsed / 1024 / 1024 / 1024), "read + write", "")
+            }
+            if (cycles > 0) {
+                mdrow("1-port util cycles", pct(raw_value("r02a6"), cycles), "EXE_ACTIVITY.1_PORTS_UTIL / cycles", "")
+                mdrow("2-port util cycles", pct(raw_value("r04a6"), cycles), "EXE_ACTIVITY.2_PORTS_UTIL / cycles", "")
+                mdrow("3-port util cycles", pct(raw_value("r08a6"), cycles), "EXE_ACTIVITY.3_PORTS_UTIL / cycles", "")
+                mdrow("4-port util cycles", pct(raw_value("r10a6"), cycles), "EXE_ACTIVITY.4_PORTS_UTIL / cycles", "")
+                mdrow("load-bound cycles", pct(raw_value("cpu/event=0xa6,umask=0x21,cmask=0x5/"), cycles), "EXE_ACTIVITY.BOUND_ON_LOADS / cycles", "")
+                mdrow("store-bound cycles", pct(raw_value("cpu/event=0xa6,umask=0x40,cmask=0x2/"), cycles), "EXE_ACTIVITY.BOUND_ON_STORES / cycles", "")
+            }
+            if (time_elapsed > 0) mdrow("Elapsed time", sprintf("%.3f s", time_elapsed), "perf elapsed time", "")
+            exit
+        }
+
         # Print metrics table by category
         print BOLD "┌────────────────────────────────┬────────────────────┬────────────────────┐" NC
         printf BOLD "│ %-30s │ %18s │ %18s │" NC "\n", "Event", "Count", "Rate/Info"
@@ -461,10 +619,11 @@ visualize_metrics() {
         # Define category order
         cat_order[1] = "L1 Cache"; cat_order[2] = "L2 Cache"; cat_order[3] = "L3 Cache"
         cat_order[4] = "Cache"; cat_order[5] = "Stalls"; cat_order[6] = "Memory BW"
-        cat_order[7] = "FLOPs"; cat_order[8] = "TMA"; cat_order[9] = "Branch"
-        cat_order[10] = "TLB"; cat_order[11] = "CPU"; cat_order[12] = "Other"
+        cat_order[7] = "AMX"; cat_order[8] = "Port Util"; cat_order[9] = "FLOPs"
+        cat_order[10] = "TMA"; cat_order[11] = "Branch"; cat_order[12] = "TLB"
+        cat_order[13] = "CPU"; cat_order[14] = "Other"
 
-        for (c = 1; c <= 12; c++) {
+        for (c = 1; c <= 14; c++) {
             current_cat = cat_order[c]
             cat_has_items = 0
             for (i = 1; i <= metric_count; i++) {
@@ -646,6 +805,36 @@ visualize_metrics() {
         # Elapsed time
         if (time_elapsed > 0) {
             printf "  " BOLD "Elapsed Time:" NC " %.3f seconds\n", time_elapsed
+        }
+
+        # GEMM hardware profile derived metrics
+        ref_cycles = metrics["ref-cycles"]
+        unhalted = metrics["cpu_clk_unhalted.thread"]
+        unhalted_ref = metrics["cpu_clk_unhalted.ref_tsc"]
+        amx_busy = metrics["r02b7"]
+        dram_read = metrics["uncore_imc/cas_count_read/"]
+        dram_write = metrics["uncore_imc/cas_count_write/"]
+        if (ref_cycles > 0 || unhalted_ref > 0 || amx_busy > 0 || dram_read > 0 || dram_write > 0 || metrics["r02a6"] > 0) {
+            print ""
+            print BOLD "GEMM Hardware Metrics:" NC
+            if (ref_cycles > 0 && cycles > 0) {
+                printf "  " BOLD "CPU Cycles/Ref Cycles:" NC " %.2f%% (can exceed 100%% above reference frequency)\n", cycles * 100.0 / ref_cycles
+            }
+            if (unhalted_ref > 0 && unhalted > 0) {
+                printf "  " BOLD "CPU Unhalted/Ref:" NC " %.2f%% (can exceed 100%% above reference frequency)\n", unhalted * 100.0 / unhalted_ref
+            }
+            if (cycles > 0 && amx_busy > 0) {
+                printf "  " BOLD "AMX Busy:" NC " %.0f cycles (%.4f%% of cycles)\n", amx_busy, amx_busy * 100.0 / cycles
+            }
+            if (time_elapsed > 0 && (dram_read + dram_write) > 0) {
+                printf "  " BOLD "DRAM Read BW:" NC " %.2f GiB/s\n", dram_read / time_elapsed / 1024 / 1024 / 1024
+                printf "  " BOLD "DRAM Write BW:" NC " %.2f GiB/s\n", dram_write / time_elapsed / 1024 / 1024 / 1024
+                printf "  " BOLD "DRAM Total BW:" NC " %.2f GiB/s\n", (dram_read + dram_write) / time_elapsed / 1024 / 1024 / 1024
+            }
+            if (cycles > 0 && metrics["r02a6"] + metrics["r04a6"] + metrics["r08a6"] + metrics["r10a6"] > 0) {
+                printf "  " BOLD "Port Util Cycles:" NC " 1p %.2f%%, 2p %.2f%%, 3p %.2f%%, 4p %.2f%%\n", metrics["r02a6"] * 100.0 / cycles, metrics["r04a6"] * 100.0 / cycles, metrics["r08a6"] * 100.0 / cycles, metrics["r10a6"] * 100.0 / cycles
+                printf "  " BOLD "Load/Store Bound:" NC " load %.2f%%, store %.2f%% of cycles\n", metrics["cpu/event=0xa6,umask=0x21,cmask=0x5/"] * 100.0 / cycles, metrics["cpu/event=0xa6,umask=0x40,cmask=0x2/"] * 100.0 / cycles
+            }
         }
 
         # ═══════════════════════════════════════════════════════════════════
@@ -1184,6 +1373,7 @@ visualize_metrics() {
 compare_metrics() {
     local baseline_file="$1"
     local optimized_file="$2"
+    local agent_mode="$3"
 
     if [[ -z "$baseline_file" ]] || [[ -z "$optimized_file" ]]; then
         echo -e "${RED}Error: --compare requires two file names${NC}"
@@ -1204,23 +1394,45 @@ compare_metrics() {
         exit 1
     fi
 
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}                                    Performance Comparison${NC}"
-    echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════════════════════════${NC}"
-    echo ""
-    echo -e "${YELLOW}Baseline:${NC}  ${base_path}"
-    echo -e "${YELLOW}Optimized:${NC} ${opt_path}"
-    echo ""
+    if [[ -n "$agent_mode" ]]; then
+        echo "# Performance Comparison"
+        echo ""
+        echo "Baseline: \`${base_path}\`"
+        echo "Optimized: \`${opt_path}\`"
+        echo ""
+    else
+        echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BOLD}                                    Performance Comparison${NC}"
+        echo -e "${CYAN}════════════════════════════════════════════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "${YELLOW}Baseline:${NC}  ${base_path}"
+        echo -e "${YELLOW}Optimized:${NC} ${opt_path}"
+        echo ""
+    fi
 
     # Use awk to parse both files and compare
     if ! awk -v RED="${RED}" -v GREEN="${GREEN}" -v YELLOW="${YELLOW}" -v NC="${NC}" -v BOLD="${BOLD}" \
-        -v base_file="$base_path" -v opt_file="$opt_path" '
+        -v base_file="$base_path" -v opt_file="$opt_path" -v agent="$agent_mode" '
     # Helper function to format large numbers (defined outside blocks)
     function fmt_num(n) {
         if (n >= 1000000000) return sprintf("%.2fB", n / 1000000000)
         if (n >= 1000000) return sprintf("%.1fM", n / 1000000)
         if (n >= 1000) return sprintf("%.1fK", n / 1000)
         return sprintf("%d", n)
+    }
+    function scale_count(n, unit) {
+        if (unit == "B") return n
+        if (unit == "KiB") return n * 1024
+        if (unit == "MiB") return n * 1024 * 1024
+        if (unit == "GiB") return n * 1024 * 1024 * 1024
+        if (unit == "K") return n * 1000
+        if (unit == "M") return n * 1000000
+        if (unit == "G") return n * 1000000000
+        return n
+    }
+    function mdrow(a, b, c, d) {
+        gsub(/\|/, "\\|", a); gsub(/\|/, "\\|", b); gsub(/\|/, "\\|", c); gsub(/\|/, "\\|", d)
+        print "| " a " | " b " | " c " | " d " |"
     }
 
     BEGIN {
@@ -1233,6 +1445,11 @@ compare_metrics() {
             count = fields[1]
             gsub(/,/, "", count)
             event = fields[2]
+            if ((fields[2] == "B" || fields[2] == "KiB" || fields[2] == "MiB" || fields[2] == "GiB" || fields[2] == "K" || fields[2] == "M" || fields[2] == "G") && fields[3] != "") {
+                event = fields[3]
+                count = scale_count(count + 0, fields[2])
+                fields[1] = fields[1] " " fields[2]
+            }
             base[event] = count + 0
             base_fmt[event] = fields[1]
             if (!(event in event_list)) {
@@ -1257,6 +1474,11 @@ compare_metrics() {
             count = fields[1]
             gsub(/,/, "", count)
             event = fields[2]
+            if ((fields[2] == "B" || fields[2] == "KiB" || fields[2] == "MiB" || fields[2] == "GiB" || fields[2] == "K" || fields[2] == "M" || fields[2] == "G") && fields[3] != "") {
+                event = fields[3]
+                count = scale_count(count + 0, fields[2])
+                fields[1] = fields[1] " " fields[2]
+            }
             opt[event] = count + 0
             opt_fmt[event] = fields[1]
             if (!(event in event_list)) {
@@ -1301,7 +1523,8 @@ compare_metrics() {
 
         # Display warning banner if key metrics are missing
         if (missing_cpu || missing_flops || missing_branch) {
-            print YELLOW "⚠ REDUCED METRICS COMPARISON" NC
+            if (agent == "1") print "## Reduced Metrics"
+            else print YELLOW "⚠ REDUCED METRICS COMPARISON" NC
             print "Some comparisons unavailable due to missing events in one or both files:"
             if (missing_cpu) print "  • IPC comparison"
             if (missing_flops) print "  • GFLOPS and operational intensity comparison"
@@ -1310,9 +1533,16 @@ compare_metrics() {
         }
 
         # Print comparison table
-        print BOLD "┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐" NC
-        printf BOLD "│ %-30s │ %16s │ %16s │ %12s │" NC "\n", "Metric", "Baseline", "Optimized", "Change"
-        print BOLD "├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤" NC
+        if (agent == "1") {
+            print "## Event Comparison"
+            print ""
+            print "| Metric | Baseline | Optimized | Change |"
+            print "|---|---:|---:|---:|"
+        } else {
+            print BOLD "┌────────────────────────────────┬──────────────────┬──────────────────┬──────────────┐" NC
+            printf BOLD "│ %-30s │ %16s │ %16s │ %12s │" NC "\n", "Metric", "Baseline", "Optimized", "Change"
+            print BOLD "├────────────────────────────────┼──────────────────┼──────────────────┼──────────────┤" NC
+        }
 
         for (i = 1; i <= event_count; i++) {
             ev = event_order[i]
@@ -1337,7 +1567,9 @@ compare_metrics() {
             if (pad_len < 0) pad_len = 0
             padding = sprintf("%" pad_len "s", "")
 
-            if (change < -5) {
+            if (agent == "1") {
+                change_str = val_str
+            } else if (change < -5) {
                 # Improvement (less is usually better for most metrics)
                 change_str = padding GREEN val_str NC
             } else if (change > 5) {
@@ -1370,17 +1602,37 @@ compare_metrics() {
             else if (ev == "offcore_requests.demand_data_rd") friendly = "Demand Data Reads"
             else if (ev ~ /fp_arith_inst_retired.scalar_single/) friendly = "Scalar SP FLOPs"
             else if (ev ~ /fp_arith_inst_retired.scalar_double/) friendly = "Scalar DP FLOPs"
+            else if (ev == "ref-cycles") friendly = "Reference Cycles"
+            else if (ev == "cpu_clk_unhalted.thread") friendly = "Unhalted Thread Cycles"
+            else if (ev == "cpu_clk_unhalted.ref_tsc") friendly = "Unhalted Ref TSC Cycles"
+            else if (ev == "uncore_imc/cas_count_read/") friendly = "DRAM Read Bytes"
+            else if (ev == "uncore_imc/cas_count_write/") friendly = "DRAM Write Bytes"
+            else if (ev == "r02b7") friendly = "AMX Busy Cycles"
+            else if (ev == "r02a6") friendly = "1 Port Util Cycles"
+            else if (ev == "r04a6") friendly = "2 Port Util Cycles"
+            else if (ev == "r08a6") friendly = "3 Port Util Cycles"
+            else if (ev == "r10a6") friendly = "4 Port Util Cycles"
+            else if (ev == "cpu/event=0xa6,umask=0x21,cmask=0x5/") friendly = "Load Bound Cycles"
+            else if (ev == "cpu/event=0xa6,umask=0x40,cmask=0x2/") friendly = "Store Bound Cycles"
             else if (ev == "seconds") continue  # Skip raw seconds, used in derived metrics
 
-            printf "│ %-30s │ %16s │ %16s │ %s │\n", friendly, base_fmt[ev], opt_fmt[ev], change_str
+            if (agent == "1") mdrow(friendly, base_fmt[ev], opt_fmt[ev], change_str)
+            else printf "│ %-30s │ %16s │ %16s │ %s │\n", friendly, base_fmt[ev], opt_fmt[ev], change_str
         }
 
-        print BOLD "└────────────────────────────────┴──────────────────┴──────────────────┴──────────────┘" NC
+        if (agent != "1") print BOLD "└────────────────────────────────┴──────────────────┴──────────────────┴──────────────┘" NC
 
         # Print derived metrics comparison
         print ""
-        print BOLD "Derived Metrics Comparison:" NC
-        print ""
+        if (agent == "1") {
+            print "## Derived Metrics Comparison"
+            print ""
+            print "| Metric | Baseline | Optimized | Change |"
+            print "|---|---:|---:|---:|"
+        } else {
+            print BOLD "Derived Metrics Comparison:" NC
+            print ""
+        }
 
         # IPC
         if (base["cycles"] > 0 && base["instructions"] > 0) {
@@ -1400,7 +1652,8 @@ compare_metrics() {
             } else {
                 ipc_str = sprintf("%.1f%%", ipc_change)
             }
-            printf "  %-20s %8.3f → %8.3f (%s)\n", "IPC:", base_ipc, opt_ipc, ipc_str
+            if (agent == "1") mdrow("IPC", sprintf("%.3f", base_ipc), sprintf("%.3f", opt_ipc), sprintf("%.1f%%", ipc_change))
+            else printf "  %-20s %8.3f → %8.3f (%s)\n", "IPC:", base_ipc, opt_ipc, ipc_str
         }
 
         # L2 Hit Rate
@@ -1421,7 +1674,8 @@ compare_metrics() {
             } else {
                 l2_str = sprintf("%.1f pp", l2_change)
             }
-            printf "  %-20s %7.1f%% → %7.1f%% (%s)\n", "L2 Hit Rate:", base_l2_hit, opt_l2_hit, l2_str
+            if (agent == "1") mdrow("L2 Hit Rate", sprintf("%.1f%%", base_l2_hit), sprintf("%.1f%%", opt_l2_hit), sprintf("%.1f pp", l2_change))
+            else printf "  %-20s %7.1f%% → %7.1f%% (%s)\n", "L2 Hit Rate:", base_l2_hit, opt_l2_hit, l2_str
         }
 
         # L3 Hit Rate
@@ -1442,7 +1696,8 @@ compare_metrics() {
             } else {
                 l3_str = sprintf("%.2f pp", l3_change)
             }
-            printf "  %-20s %7.2f%% → %7.2f%% (%s)\n", "L3 Hit Rate:", base_l3_hit, opt_l3_hit, l3_str
+            if (agent == "1") mdrow("L3 Hit Rate", sprintf("%.2f%%", base_l3_hit), sprintf("%.2f%%", opt_l3_hit), sprintf("%.2f pp", l3_change))
+            else printf "  %-20s %7.2f%% → %7.2f%% (%s)\n", "L3 Hit Rate:", base_l3_hit, opt_l3_hit, l3_str
         }
 
         # Execution time (from cycles, rough estimate)
@@ -1455,9 +1710,13 @@ compare_metrics() {
             } else {
                 time_str = sprintf("%.1f%%", time_change)
             }
-            printf "  %-20s %7.3fs → %7.3fs (%s)\n", "Elapsed Time:", base_time, opt_time, time_str
+            if (agent == "1") mdrow("Elapsed Time", sprintf("%.3fs", base_time), sprintf("%.3fs", opt_time), sprintf("%.1f%%", time_change))
+            else printf "  %-20s %7.3fs → %7.3fs (%s)\n", "Elapsed Time:", base_time, opt_time, time_str
 
-            if (base_time > opt_time) {
+            if (agent == "1") {
+                if (base_time > opt_time) mdrow("Speedup", "1.00x", sprintf("%.2fx", base_time / opt_time), "")
+                else if (opt_time > base_time) mdrow("Slowdown", "1.00x", sprintf("%.2fx", opt_time / base_time), "")
+            } else if (base_time > opt_time) {
                 speedup = base_time / opt_time
                 printf "  %-20s " GREEN "%.2fx" NC "\n", "Speedup:", speedup
             } else if (opt_time > base_time) {
@@ -1465,6 +1724,8 @@ compare_metrics() {
                 printf "  %-20s " RED "%.2fx" NC "\n", "Slowdown:", slowdown
             }
         }
+
+        if (agent == "1") exit
 
         # ═══════════════════════════════════════════════════════════════════
         # PERFORMANCE EXPLANATION SECTION
@@ -1625,6 +1886,9 @@ COMPARE_BASE=""
 COMPARE_OPT=""
 NO_INSIGHTS=""
 CACHE_ONLY=""
+PROFILE=""
+AGENT_MODE=""
+PERF_SCOPE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1642,6 +1906,23 @@ while [[ $# -gt 0 ]]; do
             ;;
         --cache-only)
             CACHE_ONLY="1"
+            shift
+            ;;
+        --profile)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --profile <name> is required${NC}"
+                exit 1
+            fi
+            PROFILE="$2"
+            if [[ "$PROFILE" != "gemm" ]]; then
+                echo -e "${RED}Error: unknown profile: ${PROFILE}${NC}"
+                echo "Supported profiles: gemm"
+                exit 1
+            fi
+            shift 2
+            ;;
+        --agent)
+            AGENT_MODE="1"
             shift
             ;;
         --compare)
@@ -1697,16 +1978,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -z "$MODE" && -n "$PROFILE" && -n "$EXECUTABLE" ]]; then
+    MODE="record"
+fi
+
 # Execute based on mode
 case "$MODE" in
     record)
         record_cache_metrics "$OUTPUT" "$EXECUTABLE" "${EXEC_ARGS[@]}"
         ;;
     visualize)
-        visualize_metrics "$INPUT" "$NO_INSIGHTS"
+        visualize_metrics "$INPUT" "$NO_INSIGHTS" "$AGENT_MODE"
         ;;
     compare)
-        compare_metrics "$COMPARE_BASE" "$COMPARE_OPT"
+        compare_metrics "$COMPARE_BASE" "$COMPARE_OPT" "$AGENT_MODE"
         ;;
     "")
         echo -e "${RED}Error: No mode specified${NC}"
